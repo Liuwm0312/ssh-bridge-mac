@@ -119,7 +119,8 @@ const toolDefinitions = [
     inputSchema: {
       type: "object",
       properties: {
-        session: { type: "string", description: "Session name." }
+        session: { type: "string", description: "Session name." },
+        reopen: { type: "boolean", description: "Open another Terminal.app mirror window even if this session is already mirrored.", default: false }
       },
       required: ["session"]
     }
@@ -328,11 +329,21 @@ function appleScriptString(value) {
   return JSON.stringify(String(value));
 }
 
-function openTerminalMirror(session) {
+function openTerminalMirror(session, options = {}) {
   if (process.platform !== "darwin") {
     throw new Error("Terminal.app mirroring is available only on macOS.");
   }
   if (!session.mirror) createMirror(session);
+  if (session.mirror.enabled && !options.reopen) {
+    return {
+      enabled: true,
+      filePath: session.mirror.filePath,
+      title: session.mirror.title,
+      openedAt: session.mirror.openedAt,
+      reused: true,
+      note: "This session is already mirrored. Pass reopen=true only if the previous Terminal.app window was closed."
+    };
+  }
   session.mirror.enabled = true;
   session.mirror.openedAt = new Date().toISOString();
   const tailCommand = [
@@ -358,6 +369,8 @@ function openTerminalMirror(session) {
     enabled: session.mirror.enabled,
     filePath: session.mirror.filePath,
     title: session.mirror.title,
+    openedAt: session.mirror.openedAt,
+    reused: false,
     note: "A read-only Terminal.app mirror window was requested. Codex still controls the PTY input."
   };
 }
@@ -818,7 +831,7 @@ function readTerminalState(args) {
 
 function showTerminal(args) {
   const session = requireSession(args.session);
-  return { ok: true, session: sessionSummary(session), mirror: openTerminalMirror(session) };
+  return { ok: true, session: sessionSummary(session), mirror: openTerminalMirror(session, { reopen: Boolean(args.reopen) }) };
 }
 
 function hideTerminal(args) {

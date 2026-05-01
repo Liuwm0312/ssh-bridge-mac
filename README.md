@@ -130,6 +130,15 @@ ssh user@host
 
 对已有会话调用 `ssh_mac_show_terminal`，可以打开一个只读的 Terminal.app 镜像窗口。也可以在调用 `ssh_mac_open_terminal` 时传入 `"show": true`。
 
+同一个会话重复调用 `ssh_mac_show_terminal` 时，默认会复用已有镜像状态，不会再开新窗口。如果你已经手动关闭了原来的 Terminal.app 窗口，并且想重新打开一个旁观窗口，可以传入：
+
+```json
+{
+  "session": "dev",
+  "reopen": true
+}
+```
+
 镜像窗口会 `tail -f` 查看 `state/mirrors/` 下的会话 transcript。Codex 仍然通过 MCP 工具控制真正的 PTY 输入；Terminal.app 窗口只是给你旁观，不建议在里面输入。用 `ssh_mac_hide_terminal` 可以停止继续写入镜像 transcript。Terminal 的 tail 窗口可能仍会保留，手动关闭即可。
 
 只有当你想让每个新会话都自动请求镜像窗口时，才设置：
@@ -271,6 +280,15 @@ Mirroring is off by default. Codex can open a local Terminal.app window only whe
 ```
 
 Use `ssh_mac_show_terminal` to open a read-only Terminal.app mirror for an existing session. Or pass `"show": true` when calling `ssh_mac_open_terminal`.
+
+Repeated `ssh_mac_show_terminal` calls for the same session reuse the existing mirror state by default and do not open another window. If you manually closed the original Terminal.app window and want to open a new watcher, pass:
+
+```json
+{
+  "session": "dev",
+  "reopen": true
+}
+```
 
 The mirror tails a session transcript under `state/mirrors/`. Codex still controls the real PTY input through MCP tools; the Terminal.app window is for watching, not typing. Use `ssh_mac_hide_terminal` to stop writing new output to the mirror transcript. The Terminal tail window may remain open until you close it.
 

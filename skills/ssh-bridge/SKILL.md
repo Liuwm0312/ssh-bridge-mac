@@ -18,6 +18,7 @@ Use this skill for the Mac-only interactive PTY version of SSH Bridge.
 - Use `ssh_mac_wait_for_text` after sending input when waiting for a prompt, menu, login banner, or command output.
 - Use `ssh_mac_terminal_state` before acting inside full-screen or ambiguous terminal states.
 - Use `ssh_mac_show_terminal` only when the user asks to watch the session locally.
+- Do not call `ssh_mac_show_terminal` repeatedly for the same session unless the user closed the previous mirror and asks to reopen it; use `reopen: true` in that case.
 - Use `ssh_mac_hide_terminal` when the user asks to stop showing local terminal output.
 - Use `ssh_mac_resize` when full-screen output wraps badly.
 - Use `ssh_mac_close` when the session is no longer needed.
