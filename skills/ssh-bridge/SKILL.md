@@ -1,0 +1,33 @@
+---
+name: ssh-bridge
+description: Use when Codex should operate an interactive macOS PTY-backed SSH terminal session through the ssh-bridge-mac plugin.
+---
+
+# SSH Bridge Mac
+
+Use this skill for the Mac-only interactive PTY version of SSH Bridge.
+
+## Tool Preference
+
+- Use `ssh_mac_list_hosts` to inspect configured aliases.
+- Use `ssh_mac_open_terminal` to start a named interactive SSH session.
+- Use `ssh_mac_send` to send commands or raw keystrokes.
+- Use `ssh_mac_read` after every send to observe the terminal state.
+- Use `ssh_mac_resize` when full-screen output wraps badly.
+- Use `ssh_mac_close` when the session is no longer needed.
+
+## Interaction Rules
+
+- Always read the terminal output after opening a session.
+- Send commands with a trailing newline, for example `pwd\n`.
+- For full-screen programs, use raw keystrokes deliberately:
+  - `q` to quit many pagers and monitors.
+  - `\u0003` for Ctrl-C.
+  - `\u0004` for Ctrl-D.
+  - `\u001b` for Escape.
+- Prefer short, observable steps. Do not send a long destructive command chain into an interactive terminal.
+- Close idle sessions when finished.
+
+## Safety
+
+This plugin is closer to a real terminal than the structured cross-platform SSH Bridge. Use extra care on production hosts. For audited file writes, deploys, approvals, and policy-heavy changes, prefer the structured SSH Bridge tools instead.

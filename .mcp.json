@@ -1,0 +1,17 @@
+{
+  "mcpServers": {
+    "ssh-bridge": {
+      "command": "node",
+      "args": [
+        "./scripts/ssh-bridge-mac-server.js"
+      ],
+      "cwd": ".",
+      "env": {
+        "SSH_BRIDGE_MAC_HOSTS_FILE": "./hosts.json",
+        "SSH_BRIDGE_MAC_STRICT_HOST_KEY_CHECKING": "accept-new",
+        "SSH_BRIDGE_MAC_DEFAULT_IDENTITY_FILE": "~/.ssh/id_ed25519",
+        "SSH_BRIDGE_MAC_MAX_BUFFER_BYTES": "200000"
+      }
+    }
+  }
+}

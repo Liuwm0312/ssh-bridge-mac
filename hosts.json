@@ -1,0 +1,10 @@
+{
+  "example": {
+    "host": "203.0.113.10",
+    "user": "devops",
+    "port": 22,
+    "identityFile": "~/.ssh/id_ed25519",
+    "description": "Example Linux host for interactive PTY SSH sessions",
+    "tags": ["dev", "linux"]
+  }
+}

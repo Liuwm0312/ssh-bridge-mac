@@ -1,0 +1,43 @@
+{
+  "name": "ssh-bridge",
+  "version": "0.1.0",
+  "description": "Mac-only SSH Bridge plugin with real PTY-backed interactive SSH terminal sessions for Codex.",
+  "author": {
+    "name": "Liuwm0312",
+    "url": "https://github.com/Liuwm0312"
+  },
+  "homepage": "https://github.com/Liuwm0312/ssh-bridge-mac",
+  "repository": "https://github.com/Liuwm0312/ssh-bridge-mac",
+  "license": "MIT",
+  "keywords": [
+    "ssh",
+    "pty",
+    "terminal",
+    "macos",
+    "mcp",
+    "codex"
+  ],
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "SSH Bridge",
+    "shortDescription": "Mac PTY-backed interactive SSH terminal sessions",
+    "longDescription": "Adds MCP tools that let Codex open, read, write, resize, and close interactive SSH terminal sessions through macOS PTY support.",
+    "developerName": "Liuwm0312",
+    "category": "Productivity",
+    "capabilities": [
+      "Interactive",
+      "Write"
+    ],
+    "websiteURL": "https://github.com/Liuwm0312/ssh-bridge-mac",
+    "privacyPolicyURL": "https://docs.github.com/en/site-policy/privacy-policies/github-privacy-statement",
+    "termsOfServiceURL": "https://docs.github.com/en/site-policy/github-terms/github-terms-of-service",
+    "defaultPrompt": [
+      "Open an interactive SSH terminal",
+      "Read the current SSH terminal output",
+      "Send a command to the SSH terminal"
+    ],
+    "brandColor": "#0F766E",
+    "screenshots": []
+  }
+}
