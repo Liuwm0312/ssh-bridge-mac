@@ -1,0 +1,20 @@
+{
+  "name": "liuwm-local",
+  "interface": {
+    "displayName": "Liuwm Local Plugins"
+  },
+  "plugins": [
+    {
+      "name": "ssh-bridge",
+      "source": {
+        "source": "local",
+        "path": "."
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}
