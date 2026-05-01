@@ -5,7 +5,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 
-const SERVER_INFO = { name: "ssh-bridge", version: "0.3.0" };
+const SERVER_INFO = { name: "ssh-bridge", version: "0.4.0" };
 const PROTOCOL_VERSION = "2025-03-26";
 const sessions = new Map();
 
@@ -28,7 +28,8 @@ const toolDefinitions = [
         identityFile: { type: "string", description: "Local private key path override." },
         cols: { type: "integer", description: "Terminal columns.", default: 120 },
         rows: { type: "integer", description: "Terminal rows.", default: 40 },
-        command: { type: "string", description: "Optional initial remote command." }
+        command: { type: "string", description: "Optional initial remote command." },
+        show: { type: "boolean", description: "Open a local Terminal.app mirror window for this session.", default: false }
       },
       required: ["session", "host"]
     }
@@ -113,6 +114,28 @@ const toolDefinitions = [
     }
   },
   {
+    name: "ssh_mac_show_terminal",
+    description: "Open a local Terminal.app mirror window for an existing PTY SSH session.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        session: { type: "string", description: "Session name." }
+      },
+      required: ["session"]
+    }
+  },
+  {
+    name: "ssh_mac_hide_terminal",
+    description: "Stop writing new output to the local Terminal.app mirror transcript for a session.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        session: { type: "string", description: "Session name." }
+      },
+      required: ["session"]
+    }
+  },
+  {
     name: "ssh_mac_resize",
     description: "Resize the remote terminal by sending stty rows/cols to the PTY session.",
     inputSchema: {
@@ -150,6 +173,22 @@ function getEnv(name, fallback = "") {
 
 function getServerRoot() {
   return path.resolve(__dirname, "..");
+}
+
+function getStateRoot() {
+  return path.join(getServerRoot(), "state");
+}
+
+function getMirrorDir() {
+  return path.join(getStateRoot(), "mirrors");
+}
+
+function ensureDir(dirPath) {
+  fs.mkdirSync(dirPath, { recursive: true });
+}
+
+function safeFilePart(value) {
+  return String(value || "session").replace(/[^A-Za-z0-9_.-]+/g, "-").replace(/^-+|-+$/g, "") || "session";
 }
 
 function expandLocalPath(value) {
@@ -234,6 +273,7 @@ function appendChunk(session, stream, text) {
   session.chunks.push(chunk);
   if (stream === "stdout" || stream === "stderr") {
     feedScreen(session.screen, text);
+    appendMirrorOutput(session, text);
   }
   session.bufferBytes += Buffer.byteLength(text, "utf8");
   const limit = maxBufferBytes();
@@ -241,6 +281,101 @@ function appendChunk(session, stream, text) {
     const removed = session.chunks.shift();
     session.bufferBytes -= Buffer.byteLength(removed.text, "utf8");
   }
+}
+
+function shouldShowOnOpen(args) {
+  if (args.show !== undefined) return Boolean(args.show);
+  return getEnv("SSH_BRIDGE_MAC_SHOW_ON_OPEN", "false").toLowerCase() === "true";
+}
+
+function createMirror(session) {
+  ensureDir(getMirrorDir());
+  const stamp = new Date().toISOString().replace(/[-:TZ.]/g, "").slice(0, 14);
+  const filePath = path.join(getMirrorDir(), `${safeFilePart(session.name)}-${stamp}.log`);
+  const title = `SSH Bridge ${session.name}`;
+  fs.writeFileSync(filePath, [
+    `SSH Bridge mirror: ${session.name}`,
+    `Target: ${session.target.user ? `${session.target.user}@` : ""}${session.target.host}:${session.target.port}`,
+    `Started: ${session.createdAt}`,
+    "",
+    "This is a read-only mirror of Codex's PTY session. Type in Codex tools, not this window.",
+    ""
+  ].join("\n"), "utf8");
+  session.mirror = {
+    enabled: false,
+    filePath,
+    title,
+    openedAt: "",
+    lastError: ""
+  };
+}
+
+function appendMirrorOutput(session, text) {
+  if (!session.mirror?.enabled) return;
+  try {
+    fs.appendFileSync(session.mirror.filePath, text, "utf8");
+  } catch (error) {
+    session.mirror.lastError = error.message;
+    session.mirror.enabled = false;
+  }
+}
+
+function shellQuote(value) {
+  return `'${String(value).replace(/'/g, `'\\''`)}'`;
+}
+
+function appleScriptString(value) {
+  return JSON.stringify(String(value));
+}
+
+function openTerminalMirror(session) {
+  if (process.platform !== "darwin") {
+    throw new Error("Terminal.app mirroring is available only on macOS.");
+  }
+  if (!session.mirror) createMirror(session);
+  session.mirror.enabled = true;
+  session.mirror.openedAt = new Date().toISOString();
+  const tailCommand = [
+    `printf '\\\\033]0;${session.mirror.title}\\\\007'`,
+    "clear",
+    `tail -n +1 -f ${shellQuote(session.mirror.filePath)}`
+  ].join("; ");
+  const script = [
+    'tell application "Terminal"',
+    "activate",
+    `do script ${appleScriptString(tailCommand)}`,
+    "end tell"
+  ].join("\n");
+  const result = spawn("osascript", ["-e", script], {
+    cwd: getServerRoot(),
+    stdio: ["ignore", "pipe", "pipe"]
+  });
+  result.stdout.on("data", () => {});
+  result.stderr.on("data", (data) => {
+    session.mirror.lastError = data.toString("utf8");
+  });
+  return {
+    enabled: session.mirror.enabled,
+    filePath: session.mirror.filePath,
+    title: session.mirror.title,
+    note: "A read-only Terminal.app mirror window was requested. Codex still controls the PTY input."
+  };
+}
+
+function stopTerminalMirror(session) {
+  if (!session.mirror) createMirror(session);
+  session.mirror.enabled = false;
+  try {
+    fs.appendFileSync(session.mirror.filePath, "\n[ssh-bridge-mac mirror disabled; close this Terminal window when finished]\n", "utf8");
+  } catch (error) {
+    session.mirror.lastError = error.message;
+  }
+  return {
+    enabled: false,
+    filePath: session.mirror.filePath,
+    title: session.mirror.title,
+    note: "New PTY output will no longer be mirrored. The Terminal tail window may remain open until closed."
+  };
 }
 
 function sessionSummary(session) {
@@ -255,7 +390,14 @@ function sessionSummary(session) {
     cols: session.cols,
     rows: session.rows,
     createdAt: session.createdAt,
-    closedAt: session.closedAt || ""
+    closedAt: session.closedAt || "",
+    mirror: session.mirror ? {
+      enabled: session.mirror.enabled,
+      filePath: session.mirror.filePath,
+      title: session.mirror.title,
+      openedAt: session.mirror.openedAt,
+      lastError: session.mirror.lastError
+    } : null
   };
 }
 
@@ -602,8 +744,10 @@ function openTerminal(args) {
     closed: false,
     exitCode: null,
     signal: null,
-    screen: createScreen(rows, cols)
+    screen: createScreen(rows, cols),
+    mirror: null
   };
+  createMirror(session);
   sessions.set(name, session);
 
   child.stdout.on("data", (data) => appendChunk(session, "stdout", data.toString("utf8")));
@@ -616,7 +760,13 @@ function openTerminal(args) {
     appendChunk(session, "status", `\n[ssh-bridge-mac session exited code=${code} signal=${signal || ""}]\n`);
   });
 
-  return { ok: true, session: sessionSummary(session), command: pythonPath, args: childArgs };
+  const mirror = shouldShowOnOpen(args) ? openTerminalMirror(session) : {
+    enabled: false,
+    filePath: session.mirror.filePath,
+    title: session.mirror.title
+  };
+
+  return { ok: true, session: sessionSummary(session), command: pythonPath, args: childArgs, mirror };
 }
 
 function sendInput(args) {
@@ -664,6 +814,16 @@ function readScreen(args) {
 function readTerminalState(args) {
   const session = requireSession(args.session);
   return { ok: true, session: sessionSummary(session), state: terminalState(session) };
+}
+
+function showTerminal(args) {
+  const session = requireSession(args.session);
+  return { ok: true, session: sessionSummary(session), mirror: openTerminalMirror(session) };
+}
+
+function hideTerminal(args) {
+  const session = requireSession(args.session);
+  return { ok: true, session: sessionSummary(session), mirror: stopTerminalMirror(session) };
 }
 
 function sendKey(args) {
@@ -749,6 +909,10 @@ async function callTool(name, args = {}) {
       return waitForText(args);
     case "ssh_mac_terminal_state":
       return readTerminalState(args);
+    case "ssh_mac_show_terminal":
+      return showTerminal(args);
+    case "ssh_mac_hide_terminal":
+      return hideTerminal(args);
     case "ssh_mac_resize":
       return resizeTerminal(args);
     case "ssh_mac_list_sessions":

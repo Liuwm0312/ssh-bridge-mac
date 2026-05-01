@@ -11,6 +11,7 @@
         "SSH_BRIDGE_MAC_STRICT_HOST_KEY_CHECKING": "accept-new",
         "SSH_BRIDGE_MAC_DEFAULT_IDENTITY_FILE": "~/.ssh/id_ed25519",
         "SSH_BRIDGE_MAC_PYTHON": "python3",
+        "SSH_BRIDGE_MAC_SHOW_ON_OPEN": "false",
         "SSH_BRIDGE_MAC_MAX_BUFFER_BYTES": "200000"
       }
     }

@@ -17,6 +17,8 @@ Use this skill for the Mac-only interactive PTY version of SSH Bridge.
 - Use `ssh_mac_key` for named keys such as `enter`, `tab`, `ctrl-c`, `ctrl-d`, `escape`, arrows, `page-up`, and `page-down`.
 - Use `ssh_mac_wait_for_text` after sending input when waiting for a prompt, menu, login banner, or command output.
 - Use `ssh_mac_terminal_state` before acting inside full-screen or ambiguous terminal states.
+- Use `ssh_mac_show_terminal` only when the user asks to watch the session locally.
+- Use `ssh_mac_hide_terminal` when the user asks to stop showing local terminal output.
 - Use `ssh_mac_resize` when full-screen output wraps badly.
 - Use `ssh_mac_close` when the session is no longer needed.
 
@@ -25,6 +27,7 @@ Use this skill for the Mac-only interactive PTY version of SSH Bridge.
 - Always read the terminal output after opening a session.
 - Prefer `ssh_mac_screen` after opening or changing full-screen programs.
 - Prefer `ssh_mac_terminal_state` when the screen may be a pager, editor, monitor, REPL, or interactive prompt.
+- Do not enable local Terminal.app mirroring unless the user asks; the default is headless PTY operation.
 - Send shell commands with a trailing newline, for example `pwd\n`.
 - Prefer `ssh_mac_key` over raw control characters when a named key exists.
 - For full-screen programs, use raw keystrokes deliberately:

@@ -26,6 +26,8 @@ This version is intended for workflows such as:
 - `ssh_mac_key`
 - `ssh_mac_wait_for_text`
 - `ssh_mac_terminal_state`
+- `ssh_mac_show_terminal`
+- `ssh_mac_hide_terminal`
 - `ssh_mac_resize`
 - `ssh_mac_list_sessions`
 - `ssh_mac_close`
@@ -62,6 +64,7 @@ ssh user@host
 
 6. Read output with `ssh_mac_read`.
 7. For terminal-like operation, prefer `ssh_mac_screen` for the current screen and `ssh_mac_key` for common keys.
+8. When you want to watch Codex operate, call `ssh_mac_show_terminal` for the session.
 
 ## Keystrokes
 
@@ -110,6 +113,22 @@ Or use `ssh_mac_key` with names such as:
 - `blank`, `closed`, or `unknown`
 
 The result includes `mode`, `detectedProgram`, `confidence`, `hints`, `recommendedKeys`, and the current `screen` snapshot.
+
+## Optional Local Terminal Mirror
+
+Mirroring is off by default. Codex can open a local Terminal.app window only when requested:
+
+```json
+{
+  "session": "dev"
+}
+```
+
+Use `ssh_mac_show_terminal` to open a read-only Terminal.app mirror for an existing session. Or pass `"show": true` when calling `ssh_mac_open_terminal`.
+
+The mirror tails a session transcript under `state/mirrors/`. Codex still controls the real PTY input through MCP tools; the Terminal.app window is for watching, not typing. Use `ssh_mac_hide_terminal` to stop writing new output to the mirror transcript. The Terminal tail window may remain open until you close it.
+
+Set `SSH_BRIDGE_MAC_SHOW_ON_OPEN=true` only if you want every new session to request a mirror window automatically.
 
 ## Safety Notes
 
