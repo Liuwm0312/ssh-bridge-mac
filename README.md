@@ -2,11 +2,11 @@
 
 Mac-only Codex plugin for real PTY-backed interactive SSH terminal sessions.
 
-This repository is separate from the cross-platform `ssh-bridge` plugin. It keeps the same plugin name, `ssh-bridge`, but focuses on terminal-like interaction on macOS by wrapping `ssh -tt` with `/usr/bin/script`, which gives the remote process a real pseudo-terminal.
+This repository is separate from the cross-platform `ssh-bridge` plugin. It keeps the same plugin name, `ssh-bridge`, but focuses on terminal-like interaction on macOS by running `ssh -tt` behind a small Python `pty` helper, which gives the remote process a real pseudo-terminal.
 
 ## Why Mac Only
 
-macOS provides Unix-like SSH tooling and `/usr/bin/script` out of the box. That lets the plugin support interactive programs more naturally than a plain `spawn("ssh")` pipe.
+macOS provides Unix-like SSH tooling and Python's standard `pty` module out of the box. That lets the plugin support interactive programs more naturally than a plain `spawn("ssh")` pipe.
 
 This version is intended for workflows such as:
 
@@ -22,6 +22,9 @@ This version is intended for workflows such as:
 - `ssh_mac_open_terminal`
 - `ssh_mac_send`
 - `ssh_mac_read`
+- `ssh_mac_screen`
+- `ssh_mac_key`
+- `ssh_mac_wait_for_text`
 - `ssh_mac_resize`
 - `ssh_mac_list_sessions`
 - `ssh_mac_close`
@@ -57,6 +60,7 @@ ssh user@host
 ```
 
 6. Read output with `ssh_mac_read`.
+7. For terminal-like operation, prefer `ssh_mac_screen` for the current screen and `ssh_mac_key` for common keys.
 
 ## Keystrokes
 
@@ -67,6 +71,28 @@ Send raw control characters when needed:
 - Ctrl-D: `\u0004`
 - Escape: `\u001b`
 - Quit many full-screen tools: `q`
+
+Or use `ssh_mac_key` with names such as:
+
+- `enter`
+- `tab`
+- `escape`
+- `ctrl-c`
+- `ctrl-d`
+- `up`
+- `down`
+- `left`
+- `right`
+- `home`
+- `end`
+- `page-up`
+- `page-down`
+- `delete`
+- `backspace`
+
+## Screen Snapshots
+
+`ssh_mac_screen` keeps a best-effort terminal screen model from ANSI output. It tracks rows, columns, cursor position, screen clears, line clears, and common cursor movement sequences. This makes Codex behave more like it is looking at the current terminal screen instead of only reading an output log.
 
 ## Safety Notes
 

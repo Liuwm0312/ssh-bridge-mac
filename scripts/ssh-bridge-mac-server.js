@@ -5,7 +5,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 
-const SERVER_INFO = { name: "ssh-bridge", version: "0.1.0" };
+const SERVER_INFO = { name: "ssh-bridge", version: "0.2.0" };
 const PROTOCOL_VERSION = "2025-03-26";
 const sessions = new Map();
 
@@ -57,6 +57,48 @@ const toolDefinitions = [
         stripAnsi: { type: "boolean", description: "Remove ANSI escape sequences from returned text.", default: false }
       },
       required: ["session"]
+    }
+  },
+  {
+    name: "ssh_mac_screen",
+    description: "Return the current best-effort terminal screen snapshot.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        session: { type: "string", description: "Session name." },
+        trimRight: { type: "boolean", description: "Trim trailing spaces from each screen row.", default: true }
+      },
+      required: ["session"]
+    }
+  },
+  {
+    name: "ssh_mac_key",
+    description: "Send a named terminal key or key sequence to an open PTY SSH session.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        session: { type: "string", description: "Session name." },
+        key: {
+          type: "string",
+          description: "Named key such as enter, tab, escape, ctrl-c, ctrl-d, up, down, left, right, home, end, page-up, page-down, delete, backspace, q."
+        },
+        repeat: { type: "integer", description: "Number of times to send the key.", default: 1 }
+      },
+      required: ["session", "key"]
+    }
+  },
+  {
+    name: "ssh_mac_wait_for_text",
+    description: "Wait until text appears in the current screen or buffered terminal output.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        session: { type: "string", description: "Session name." },
+        text: { type: "string", description: "Text to wait for." },
+        timeoutMs: { type: "integer", description: "Maximum wait in milliseconds.", default: 5000 },
+        includeBuffer: { type: "boolean", description: "Also search buffered output chunks.", default: true }
+      },
+      required: ["session", "text"]
     }
   },
   {
@@ -179,6 +221,9 @@ function appendChunk(session, stream, text) {
     text
   };
   session.chunks.push(chunk);
+  if (stream === "stdout" || stream === "stderr") {
+    feedScreen(session.screen, text);
+  }
   session.bufferBytes += Buffer.byteLength(text, "utf8");
   const limit = maxBufferBytes();
   while (session.bufferBytes > limit && session.chunks.length > 1) {
@@ -213,6 +258,200 @@ function stripAnsi(value) {
   return String(value).replace(/\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1B\\))/g, "");
 }
 
+function createScreen(rows, cols) {
+  return {
+    rows,
+    cols,
+    cursorRow: 0,
+    cursorCol: 0,
+    lines: Array.from({ length: rows }, () => Array(cols).fill(" "))
+  };
+}
+
+function resizeScreen(screen, rows, cols) {
+  const oldLines = screen.lines;
+  screen.rows = rows;
+  screen.cols = cols;
+  screen.cursorRow = Math.min(screen.cursorRow, rows - 1);
+  screen.cursorCol = Math.min(screen.cursorCol, cols - 1);
+  screen.lines = Array.from({ length: rows }, (_unused, row) => {
+    const old = oldLines[row] || [];
+    const next = Array(cols).fill(" ");
+    for (let col = 0; col < Math.min(cols, old.length); col += 1) {
+      next[col] = old[col];
+    }
+    return next;
+  });
+}
+
+function scrollScreen(screen) {
+  screen.lines.shift();
+  screen.lines.push(Array(screen.cols).fill(" "));
+  screen.cursorRow = screen.rows - 1;
+}
+
+function clearLine(screen, mode = 0) {
+  const line = screen.lines[screen.cursorRow];
+  if (mode === 1) {
+    for (let col = 0; col <= screen.cursorCol; col += 1) line[col] = " ";
+  } else if (mode === 2) {
+    line.fill(" ");
+  } else {
+    for (let col = screen.cursorCol; col < screen.cols; col += 1) line[col] = " ";
+  }
+}
+
+function clearScreen(screen, mode = 0) {
+  if (mode === 2 || mode === 3) {
+    for (const line of screen.lines) line.fill(" ");
+    screen.cursorRow = 0;
+    screen.cursorCol = 0;
+    return;
+  }
+  if (mode === 1) {
+    for (let row = 0; row <= screen.cursorRow; row += 1) {
+      const end = row === screen.cursorRow ? screen.cursorCol + 1 : screen.cols;
+      for (let col = 0; col < end; col += 1) screen.lines[row][col] = " ";
+    }
+    return;
+  }
+  for (let row = screen.cursorRow; row < screen.rows; row += 1) {
+    const start = row === screen.cursorRow ? screen.cursorCol : 0;
+    for (let col = start; col < screen.cols; col += 1) screen.lines[row][col] = " ";
+  }
+}
+
+function moveCursor(screen, row, col) {
+  screen.cursorRow = Math.max(0, Math.min(screen.rows - 1, row));
+  screen.cursorCol = Math.max(0, Math.min(screen.cols - 1, col));
+}
+
+function putChar(screen, char) {
+  if (screen.cursorCol >= screen.cols) {
+    screen.cursorCol = 0;
+    screen.cursorRow += 1;
+  }
+  if (screen.cursorRow >= screen.rows) scrollScreen(screen);
+  screen.lines[screen.cursorRow][screen.cursorCol] = char;
+  screen.cursorCol += 1;
+}
+
+function handleCsi(screen, paramsText, command) {
+  const clean = paramsText.replace(/[?=]/g, "");
+  const params = clean.split(";").filter(Boolean).map((item) => Number.parseInt(item, 10));
+  const first = Number.isFinite(params[0]) ? params[0] : 0;
+  if (command === "A") moveCursor(screen, screen.cursorRow - (first || 1), screen.cursorCol);
+  if (command === "B") moveCursor(screen, screen.cursorRow + (first || 1), screen.cursorCol);
+  if (command === "C") moveCursor(screen, screen.cursorRow, screen.cursorCol + (first || 1));
+  if (command === "D") moveCursor(screen, screen.cursorRow, screen.cursorCol - (first || 1));
+  if (command === "G") moveCursor(screen, screen.cursorRow, (first || 1) - 1);
+  if (command === "H" || command === "f") {
+    const row = Number.isFinite(params[0]) && params[0] > 0 ? params[0] - 1 : 0;
+    const col = Number.isFinite(params[1]) && params[1] > 0 ? params[1] - 1 : 0;
+    moveCursor(screen, row, col);
+  }
+  if (command === "J") clearScreen(screen, first);
+  if (command === "K") clearLine(screen, first);
+}
+
+function feedScreen(screen, text) {
+  let index = 0;
+  const value = String(text || "");
+  while (index < value.length) {
+    const char = value[index];
+    if (char === "\x1b") {
+      const next = value[index + 1];
+      if (next === "[") {
+        let end = index + 2;
+        while (end < value.length && !/[A-Za-z~]/.test(value[end])) end += 1;
+        if (end < value.length) {
+          handleCsi(screen, value.slice(index + 2, end), value[end]);
+          index = end + 1;
+          continue;
+        }
+      }
+      if (next === "]") {
+        const bell = value.indexOf("\x07", index + 2);
+        const st = value.indexOf("\x1b\\", index + 2);
+        const end = bell === -1 ? st : st === -1 ? bell : Math.min(bell, st);
+        if (end !== -1) {
+          index = end + (value[end] === "\x1b" ? 2 : 1);
+          continue;
+        }
+      }
+      index += 2;
+      continue;
+    }
+    if (char === "\r") {
+      screen.cursorCol = 0;
+    } else if (char === "\n") {
+      screen.cursorRow += 1;
+      if (screen.cursorRow >= screen.rows) scrollScreen(screen);
+    } else if (char === "\b" || char === "\x7f") {
+      screen.cursorCol = Math.max(0, screen.cursorCol - 1);
+    } else if (char >= " ") {
+      putChar(screen, char);
+    }
+    index += 1;
+  }
+}
+
+function screenSnapshot(session, trimRight = true) {
+  const lines = session.screen.lines.map((line) => {
+    const value = line.join("");
+    return trimRight ? value.replace(/\s+$/g, "") : value;
+  });
+  return {
+    rows: session.screen.rows,
+    cols: session.screen.cols,
+    cursor: {
+      row: session.screen.cursorRow + 1,
+      col: session.screen.cursorCol + 1
+    },
+    text: lines.join("\n"),
+    lines
+  };
+}
+
+const KEY_SEQUENCES = {
+  enter: "\r",
+  return: "\r",
+  tab: "\t",
+  escape: "\x1b",
+  esc: "\x1b",
+  "ctrl-c": "\x03",
+  interrupt: "\x03",
+  "ctrl-d": "\x04",
+  eof: "\x04",
+  "ctrl-z": "\x1a",
+  q: "q",
+  up: "\x1b[A",
+  down: "\x1b[B",
+  right: "\x1b[C",
+  left: "\x1b[D",
+  home: "\x1b[H",
+  end: "\x1b[F",
+  "page-up": "\x1b[5~",
+  "page-down": "\x1b[6~",
+  delete: "\x1b[3~",
+  backspace: "\x7f",
+  space: " "
+};
+
+function keySequence(key) {
+  const normalized = String(key || "").trim().toLowerCase();
+  if (KEY_SEQUENCES[normalized] !== undefined) return KEY_SEQUENCES[normalized];
+  if (/^f([1-9]|1[0-2])$/.test(normalized)) {
+    const values = {
+      f1: "\x1bOP", f2: "\x1bOQ", f3: "\x1bOR", f4: "\x1bOS",
+      f5: "\x1b[15~", f6: "\x1b[17~", f7: "\x1b[18~", f8: "\x1b[19~",
+      f9: "\x1b[20~", f10: "\x1b[21~", f11: "\x1b[23~", f12: "\x1b[24~"
+    };
+    return values[normalized];
+  }
+  throw new Error(`Unsupported key "${key}". Use ssh_mac_send for custom raw input.`);
+}
+
 function openTerminal(args) {
   const name = String(args.session || "").trim();
   if (!name) throw new Error("session is required.");
@@ -231,8 +470,10 @@ function openTerminal(args) {
     LINES: String(rows),
     TERM: process.env.TERM || "xterm-256color"
   };
-  const childArgs = ["-q", "/dev/null", "ssh", ...sshArgs(target, args)];
-  const child = spawn("/usr/bin/script", childArgs, {
+  const helperPath = path.join(getServerRoot(), "scripts", "pty-ssh-bridge.py");
+  const pythonPath = getEnv("SSH_BRIDGE_MAC_PYTHON", "python3");
+  const childArgs = [helperPath, "--rows", String(rows), "--cols", String(cols), "--", "ssh", ...sshArgs(target, args)];
+  const child = spawn(pythonPath, childArgs, {
     cwd: getServerRoot(),
     env,
     stdio: ["pipe", "pipe", "pipe"]
@@ -251,6 +492,8 @@ function openTerminal(args) {
     closed: false,
     exitCode: null,
     signal: null
+    ,
+    screen: createScreen(rows, cols)
   };
   sessions.set(name, session);
 
@@ -264,8 +507,7 @@ function openTerminal(args) {
     appendChunk(session, "status", `\n[ssh-bridge-mac session exited code=${code} signal=${signal || ""}]\n`);
   });
 
-  child.stdin.write(`stty rows ${rows} cols ${cols} 2>/dev/null || true\n`);
-  return { ok: true, session: sessionSummary(session), command: "/usr/bin/script", args: childArgs };
+  return { ok: true, session: sessionSummary(session), command: pythonPath, args: childArgs };
 }
 
 function sendInput(args) {
@@ -305,12 +547,53 @@ function readOutput(args) {
   };
 }
 
+function readScreen(args) {
+  const session = requireSession(args.session);
+  return { ok: true, session: sessionSummary(session), screen: screenSnapshot(session, args.trimRight !== false) };
+}
+
+function sendKey(args) {
+  const repeat = Number.isInteger(args.repeat) && args.repeat > 0 ? Math.min(args.repeat, 100) : 1;
+  const input = keySequence(args.key).repeat(repeat);
+  return { ...sendInput({ session: args.session, input }), key: args.key, repeat };
+}
+
+function hasText(session, text, includeBuffer) {
+  const wanted = String(text || "");
+  if (!wanted) return true;
+  if (screenSnapshot(session, true).text.includes(wanted)) return true;
+  if (includeBuffer) {
+    return session.chunks.some((chunk) => stripAnsi(chunk.text).includes(wanted));
+  }
+  return false;
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function waitForText(args) {
+  const session = requireSession(args.session);
+  const text = String(args.text || "");
+  const timeoutMs = Number.isInteger(args.timeoutMs) ? Math.max(0, Math.min(args.timeoutMs, 60000)) : 5000;
+  const includeBuffer = args.includeBuffer !== false;
+  const startedAt = Date.now();
+  while (Date.now() - startedAt <= timeoutMs) {
+    if (hasText(session, text, includeBuffer)) {
+      return { ok: true, found: true, elapsedMs: Date.now() - startedAt, session: sessionSummary(session), screen: screenSnapshot(session, true) };
+    }
+    await sleep(100);
+  }
+  return { ok: true, found: false, elapsedMs: Date.now() - startedAt, session: sessionSummary(session), screen: screenSnapshot(session, true) };
+}
+
 function resizeTerminal(args) {
   const session = requireSession(args.session);
   const cols = Number.isInteger(args.cols) ? args.cols : session.cols;
   const rows = Number.isInteger(args.rows) ? args.rows : session.rows;
   session.cols = cols;
   session.rows = rows;
+  resizeScreen(session.screen, rows, cols);
   if (!session.closed) {
     session.child.stdin.write(`stty rows ${rows} cols ${cols} 2>/dev/null || true\n`);
   }
@@ -334,7 +617,7 @@ function closeTerminal(args) {
   return { ok: true, session: sessionSummary(session) };
 }
 
-function callTool(name, args = {}) {
+async function callTool(name, args = {}) {
   switch (name) {
     case "ssh_mac_list_hosts":
       return { ok: true, hostsFile: hostsFilePath(), hosts: Object.fromEntries(Object.entries(loadHosts()).map(([alias, profile]) => [alias, normalizeHost(alias, profile)])) };
@@ -344,6 +627,12 @@ function callTool(name, args = {}) {
       return sendInput(args);
     case "ssh_mac_read":
       return readOutput(args);
+    case "ssh_mac_screen":
+      return readScreen(args);
+    case "ssh_mac_key":
+      return sendKey(args);
+    case "ssh_mac_wait_for_text":
+      return waitForText(args);
     case "ssh_mac_resize":
       return resizeTerminal(args);
     case "ssh_mac_list_sessions":
@@ -382,7 +671,7 @@ process.stdin.on("data", (data) => {
   }
 });
 
-function handleMessage(message) {
+async function handleMessage(message) {
   if (!message || typeof message !== "object") return;
   try {
     if (message.method === "initialize") {
@@ -403,7 +692,7 @@ function handleMessage(message) {
       return;
     }
     if (message.method === "tools/call") {
-      const result = callTool(message.params?.name, message.params?.arguments || {});
+      const result = await callTool(message.params?.name, message.params?.arguments || {});
       sendMessage({
         jsonrpc: "2.0",
         id: message.id,
