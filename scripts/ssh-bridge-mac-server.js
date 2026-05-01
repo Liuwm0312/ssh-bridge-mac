@@ -5,7 +5,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 
-const SERVER_INFO = { name: "ssh-bridge", version: "0.2.0" };
+const SERVER_INFO = { name: "ssh-bridge", version: "0.3.0" };
 const PROTOCOL_VERSION = "2025-03-26";
 const sessions = new Map();
 
@@ -99,6 +99,17 @@ const toolDefinitions = [
         includeBuffer: { type: "boolean", description: "Also search buffered output chunks.", default: true }
       },
       required: ["session", "text"]
+    }
+  },
+  {
+    name: "ssh_mac_terminal_state",
+    description: "Classify the current terminal state, including likely full-screen programs and recommended keys.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        session: { type: "string", description: "Session name." }
+      },
+      required: ["session"]
     }
   },
   {
@@ -413,6 +424,103 @@ function screenSnapshot(session, trimRight = true) {
   };
 }
 
+function compactLines(lines) {
+  return lines.map((line) => line.trim()).filter(Boolean);
+}
+
+function lastNonEmptyLine(lines) {
+  const compact = compactLines(lines);
+  return compact.length ? compact[compact.length - 1] : "";
+}
+
+function confidence(value) {
+  return Math.max(0, Math.min(1, Number(value.toFixed(2))));
+}
+
+function terminalState(session) {
+  const screen = screenSnapshot(session, true);
+  const text = screen.text;
+  const lower = text.toLowerCase();
+  const lines = screen.lines;
+  const compact = compactLines(lines);
+  const lastLine = lastNonEmptyLine(lines);
+  const bottom = lines.slice(Math.max(0, lines.length - 4)).join("\n");
+  const hints = [];
+  const recommendedKeys = [];
+  let mode = "unknown";
+  let detectedProgram = "";
+  let score = 0.35;
+
+  const setState = (nextMode, program, nextScore, nextHints, keys) => {
+    mode = nextMode;
+    detectedProgram = program;
+    score = nextScore;
+    hints.splice(0, hints.length, ...nextHints);
+    recommendedKeys.splice(0, recommendedKeys.length, ...keys);
+  };
+
+  if (/--more--|less\s+\d+|press h for help or q to quit|\(end\)|^:$/im.test(text) || /manual page|^man\(/im.test(text)) {
+    setState("pager", lower.includes("man(") || lower.includes("manual page") ? "man/less" : "less/more", 0.86, [
+      "This looks like a pager. Use q to quit, page-up/page-down to navigate, or slash search if needed.",
+      "Prefer ssh_mac_key for q/page-up/page-down instead of raw input."
+    ], ["q", "page-up", "page-down", "up", "down"]);
+  } else if (/^\s*(top|htop)\s+-|load average:|tasks:\s+\d+|%cpu|^\s*pid\s+user\s+/im.test(text)) {
+    setState("monitor", lower.includes("htop") ? "htop" : "top", 0.88, [
+      "This looks like a live monitor. Use q or ctrl-c to exit before running normal shell commands.",
+      "Use ssh_mac_screen after key presses to confirm the monitor exited."
+    ], ["q", "ctrl-c"]);
+  } else if (/--\s*(insert|visual|replace)\s*--|^~\s*$/im.test(text) || /"\S+" \d+L, \d+B|E\d{2,3}:|^\s*\d+,\d+\s+All$/m.test(text)) {
+    setState("editor", "vim", 0.82, [
+      "This looks like Vim. Use escape before command keys, :wq to save and quit, or :q! to quit without saving.",
+      "For normal-mode actions, send escape first if insert/visual mode is visible."
+    ], ["escape"]);
+  } else if (/GNU nano|^\s*\^G Help\s+\^O Write Out|^\s*\^X Exit/im.test(text)) {
+    setState("editor", "nano", 0.9, [
+      "This looks like nano. Use ctrl-o to write, ctrl-x to exit, and follow prompts at the bottom.",
+      "If Codex needs to cancel, use ctrl-c or answer the bottom prompt deliberately."
+    ], ["ctrl-o", "ctrl-x", "ctrl-c"]);
+  } else if (/mysql>|postgres=#|postgres=>|psql \(|redis(?:\s+\S+)?>|sqlite>/i.test(text)) {
+    setState("repl", "database shell", 0.82, [
+      "This looks like an interactive database shell. Use the tool's quit command before returning to normal shell work.",
+      "Prefer short commands and read the screen after each command."
+    ], ["ctrl-c", "ctrl-d"]);
+  } else if (/python \d|node\.js|irb\(|pry\(|^\s*>>> |^\s*\.\.\. |^\s*> $/im.test(text)) {
+    setState("repl", "language repl", 0.76, [
+      "This looks like a programming REPL. Use ctrl-d or the language-specific exit command to leave it.",
+      "Read the screen after each expression because prompts may change."
+    ], ["ctrl-d", "ctrl-c"]);
+  } else if (/password:|passphrase|are you sure you want to continue connecting|yes\/no|\[y\/n\]|\(y\/n\)/i.test(text)) {
+    setState("prompt", "interactive prompt", 0.8, [
+      "This looks like an interactive prompt. Answer only if the requested action is expected.",
+      "For SSH host-key prompts, verify the host before typing yes."
+    ], ["enter", "ctrl-c"]);
+  } else if (/\$ $|# $|% $|> $/.test(lastLine) || /\n.*[\w.-]+@[\w.-]+.*[$#%] $/.test(bottom)) {
+    setState("shell", "shell prompt", 0.72, [
+      "This looks like a shell prompt. It is likely ready for the next command.",
+      "Send shell commands with ssh_mac_send and a trailing newline."
+    ], ["enter", "tab", "ctrl-c"]);
+  } else if (session.closed) {
+    setState("closed", "closed session", 0.95, [
+      "The PTY process has exited. Open a new terminal session before sending more input."
+    ], []);
+  } else if (compact.length === 0) {
+    setState("blank", "blank screen", 0.55, [
+      "The screen is currently blank. The process may still be starting, waiting silently, or using an alternate screen.",
+      "Use ssh_mac_read or ssh_mac_wait_for_text if you expect a prompt soon."
+    ], ["enter", "ctrl-c"]);
+  }
+
+  return {
+    mode,
+    detectedProgram,
+    confidence: confidence(score),
+    hints,
+    recommendedKeys,
+    cursor: screen.cursor,
+    screen
+  };
+}
+
 const KEY_SEQUENCES = {
   enter: "\r",
   return: "\r",
@@ -424,6 +532,8 @@ const KEY_SEQUENCES = {
   "ctrl-d": "\x04",
   eof: "\x04",
   "ctrl-z": "\x1a",
+  "ctrl-o": "\x0f",
+  "ctrl-x": "\x18",
   q: "q",
   up: "\x1b[A",
   down: "\x1b[B",
@@ -457,7 +567,7 @@ function openTerminal(args) {
   if (!name) throw new Error("session is required.");
   if (sessions.has(name)) throw new Error(`Session "${name}" is already open.`);
   if (process.platform !== "darwin") {
-    throw new Error("ssh-bridge-mac requires macOS because it uses /usr/bin/script for PTY allocation.");
+    throw new Error("ssh-bridge-mac requires macOS because it uses a local PTY helper for terminal allocation.");
   }
 
   const target = resolveTarget(args);
@@ -491,8 +601,7 @@ function openTerminal(args) {
     createdAt: new Date().toISOString(),
     closed: false,
     exitCode: null,
-    signal: null
-    ,
+    signal: null,
     screen: createScreen(rows, cols)
   };
   sessions.set(name, session);
@@ -550,6 +659,11 @@ function readOutput(args) {
 function readScreen(args) {
   const session = requireSession(args.session);
   return { ok: true, session: sessionSummary(session), screen: screenSnapshot(session, args.trimRight !== false) };
+}
+
+function readTerminalState(args) {
+  const session = requireSession(args.session);
+  return { ok: true, session: sessionSummary(session), state: terminalState(session) };
 }
 
 function sendKey(args) {
@@ -633,6 +747,8 @@ async function callTool(name, args = {}) {
       return sendKey(args);
     case "ssh_mac_wait_for_text":
       return waitForText(args);
+    case "ssh_mac_terminal_state":
+      return readTerminalState(args);
     case "ssh_mac_resize":
       return resizeTerminal(args);
     case "ssh_mac_list_sessions":

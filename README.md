@@ -25,6 +25,7 @@ This version is intended for workflows such as:
 - `ssh_mac_screen`
 - `ssh_mac_key`
 - `ssh_mac_wait_for_text`
+- `ssh_mac_terminal_state`
 - `ssh_mac_resize`
 - `ssh_mac_list_sessions`
 - `ssh_mac_close`
@@ -79,6 +80,8 @@ Or use `ssh_mac_key` with names such as:
 - `escape`
 - `ctrl-c`
 - `ctrl-d`
+- `ctrl-o`
+- `ctrl-x`
 - `up`
 - `down`
 - `left`
@@ -93,6 +96,20 @@ Or use `ssh_mac_key` with names such as:
 ## Screen Snapshots
 
 `ssh_mac_screen` keeps a best-effort terminal screen model from ANSI output. It tracks rows, columns, cursor position, screen clears, line clears, and common cursor movement sequences. This makes Codex behave more like it is looking at the current terminal screen instead of only reading an output log.
+
+## Terminal State Detection
+
+`ssh_mac_terminal_state` classifies the current screen and returns hints for what Codex should do next. It can identify common states such as:
+
+- `shell`
+- `pager` for `less`, `more`, and `man`
+- `editor` for `vim` and `nano`
+- `monitor` for `top` and `htop`
+- `repl` for database and programming language shells
+- `prompt` for password, yes/no, and other interactive prompts
+- `blank`, `closed`, or `unknown`
+
+The result includes `mode`, `detectedProgram`, `confidence`, `hints`, `recommendedKeys`, and the current `screen` snapshot.
 
 ## Safety Notes
 

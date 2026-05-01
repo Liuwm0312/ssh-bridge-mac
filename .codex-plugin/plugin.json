@@ -1,6 +1,6 @@
 {
   "name": "ssh-bridge",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Mac-only SSH Bridge plugin with real PTY-backed interactive SSH terminal sessions for Codex.",
   "author": {
     "name": "Liuwm0312",
