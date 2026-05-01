@@ -5,7 +5,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 
-const SERVER_INFO = { name: "ssh-bridge", version: "0.4.0" };
+const SERVER_INFO = { name: "ssh-bridge", version: "0.5.0" };
 const PROTOCOL_VERSION = "2025-03-26";
 const sessions = new Map();
 
@@ -319,6 +319,36 @@ function appendMirrorOutput(session, text) {
     session.mirror.lastError = error.message;
     session.mirror.enabled = false;
   }
+}
+
+function appendMirrorInput(session, input, label = "input") {
+  if (!session.mirror?.enabled) return;
+  const lines = formatMirrorInput(input, label);
+  if (!lines) return;
+  try {
+    fs.appendFileSync(session.mirror.filePath, lines, "utf8");
+  } catch (error) {
+    session.mirror.lastError = error.message;
+    session.mirror.enabled = false;
+  }
+}
+
+function formatMirrorInput(input, label) {
+  const value = String(input ?? "");
+  if (!value) return "";
+  if (label === "key") {
+    return `\n[ssh-bridge-mac key] ${value}\n`;
+  }
+  const normalized = value.replace(/\r/g, "\n");
+  const lines = normalized.split("\n");
+  const complete = normalized.endsWith("\n");
+  const rendered = lines
+    .slice(0, complete ? -1 : undefined)
+    .filter((line) => line.length > 0)
+    .map((line) => `$ ${line}`)
+    .join("\n");
+  if (rendered) return `\n${rendered}\n`;
+  return `\n[ssh-bridge-mac input] ${JSON.stringify(value)}\n`;
 }
 
 function shellQuote(value) {
@@ -788,6 +818,9 @@ function sendInput(args) {
     throw new Error(`Session "${session.name}" is closed.`);
   }
   const input = String(args.input ?? "");
+  if (args.mirror !== false) {
+    appendMirrorInput(session, input, "input");
+  }
   session.child.stdin.write(input);
   return { ok: true, writtenBytes: Buffer.byteLength(input, "utf8"), session: sessionSummary(session) };
 }
@@ -842,7 +875,9 @@ function hideTerminal(args) {
 function sendKey(args) {
   const repeat = Number.isInteger(args.repeat) && args.repeat > 0 ? Math.min(args.repeat, 100) : 1;
   const input = keySequence(args.key).repeat(repeat);
-  return { ...sendInput({ session: args.session, input }), key: args.key, repeat };
+  const session = requireSession(args.session);
+  appendMirrorInput(session, repeat > 1 ? `${args.key} x${repeat}` : String(args.key), "key");
+  return { ...sendInput({ session: args.session, input, mirror: false }), key: args.key, repeat };
 }
 
 function hasText(session, text, includeBuffer) {

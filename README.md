@@ -141,6 +141,8 @@ ssh user@host
 
 镜像窗口会 `tail -f` 查看 `state/mirrors/` 下的会话 transcript。Codex 仍然通过 MCP 工具控制真正的 PTY 输入；Terminal.app 窗口只是给你旁观，不建议在里面输入。用 `ssh_mac_hide_terminal` 可以停止继续写入镜像 transcript。Terminal 的 tail 窗口可能仍会保留，手动关闭即可。
 
+镜像 transcript 会显示 Codex 发送的命令，例如 `$ ls -la ~`。通过 `ssh_mac_key` 发送的特殊按键会显示成 `[ssh-bridge-mac key] ctrl-c` 这类可读标记。
+
 只有当你想让每个新会话都自动请求镜像窗口时，才设置：
 
 ```text
@@ -291,6 +293,8 @@ Repeated `ssh_mac_show_terminal` calls for the same session reuse the existing m
 ```
 
 The mirror tails a session transcript under `state/mirrors/`. Codex still controls the real PTY input through MCP tools; the Terminal.app window is for watching, not typing. Use `ssh_mac_hide_terminal` to stop writing new output to the mirror transcript. The Terminal tail window may remain open until you close it.
+
+The mirror transcript shows commands sent by Codex, such as `$ ls -la ~`. Special keys sent through `ssh_mac_key` are shown as readable markers like `[ssh-bridge-mac key] ctrl-c`.
 
 Set `SSH_BRIDGE_MAC_SHOW_ON_OPEN=true` only if you want every new session to request a mirror window automatically.
 
