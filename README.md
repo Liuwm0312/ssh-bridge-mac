@@ -1,22 +1,26 @@
 # SSH Bridge Mac
 
-Mac-only Codex plugin for real PTY-backed interactive SSH terminal sessions.
+中文 | [English](#english)
 
-This repository is separate from the cross-platform `ssh-bridge` plugin. It keeps the same plugin name, `ssh-bridge`, but focuses on terminal-like interaction on macOS by running `ssh -tt` behind a small Python `pty` helper, which gives the remote process a real pseudo-terminal.
+## 中文
 
-## Why Mac Only
+`SSH Bridge Mac` 是一个 macOS 专用的 Codex 插件，用于创建真正 PTY 支持的交互式 SSH 终端会话。
 
-macOS provides Unix-like SSH tooling and Python's standard `pty` module out of the box. That lets the plugin support interactive programs more naturally than a plain `spawn("ssh")` pipe.
+它和跨平台版 `ssh-bridge` 是两个独立仓库。这个仓库里的插件名称仍然是 `ssh-bridge`，但重点是 macOS 下接近真实终端的交互体验：插件通过一个小型 Python `pty` helper 运行 `ssh -tt`，让远程 Linux 进程看到真正的伪终端。
 
-This version is intended for workflows such as:
+### 为什么是 Mac 专用
 
-- opening an interactive SSH shell
-- running commands that expect a TTY
-- using `top`, `less`, REPLs, installers, and menu-driven commands
-- reading terminal output incrementally
-- sending raw keystrokes such as `q`, `Ctrl-C`, or arrow/control sequences
+macOS 自带类 Unix 的 SSH 工具和 Python 标准库 `pty` 模块。相比普通的 `spawn("ssh")` 管道，这种方式更适合支持交互式程序。
 
-## Tools
+适合的场景包括：
+
+- 打开交互式 SSH shell
+- 运行需要 TTY 的命令
+- 使用 `top`、`less`、REPL、交互式安装器、菜单式命令
+- 分段读取终端输出
+- 发送 `q`、`Ctrl-C`、方向键等原始按键
+
+### 工具列表
 
 - `ssh_mac_list_hosts`
 - `ssh_mac_open_terminal`
@@ -32,7 +36,149 @@ This version is intended for workflows such as:
 - `ssh_mac_list_sessions`
 - `ssh_mac_close`
 
-## Quick Start
+### 快速开始
+
+1. 修改 [hosts.json](./hosts.json)。
+2. 确认这台 Mac 可以免密码登录目标主机：
+
+```bash
+ssh user@host
+```
+
+3. 在 Codex 中启用插件并重新加载。
+4. 打开一个会话：
+
+```json
+{
+  "session": "dev",
+  "host": "example",
+  "cols": 120,
+  "rows": 40
+}
+```
+
+5. 用 `ssh_mac_send` 发送命令：
+
+```json
+{
+  "session": "dev",
+  "input": "pwd\n"
+}
+```
+
+6. 用 `ssh_mac_read` 读取输出。
+7. 需要接近终端操作时，优先用 `ssh_mac_screen` 查看当前屏幕，用 `ssh_mac_key` 发送常用按键。
+8. 想旁观 Codex 操作时，对该会话调用 `ssh_mac_show_terminal`。
+
+### 按键
+
+需要时可以发送原始控制字符：
+
+- Enter: `\n`
+- Ctrl-C: `\u0003`
+- Ctrl-D: `\u0004`
+- Escape: `\u001b`
+- 退出很多全屏工具：`q`
+
+也可以用 `ssh_mac_key` 发送具名按键：
+
+- `enter`
+- `tab`
+- `escape`
+- `ctrl-c`
+- `ctrl-d`
+- `ctrl-o`
+- `ctrl-x`
+- `up`
+- `down`
+- `left`
+- `right`
+- `home`
+- `end`
+- `page-up`
+- `page-down`
+- `delete`
+- `backspace`
+
+### 屏幕快照
+
+`ssh_mac_screen` 会根据 ANSI 输出维护一个尽力而为的终端屏幕模型。它会跟踪行列数、光标位置、清屏、清行和常见光标移动序列，让 Codex 更像是在看当前终端屏幕，而不是只读原始输出日志。
+
+### 终端状态识别
+
+`ssh_mac_terminal_state` 会判断当前屏幕状态，并返回 Codex 下一步操作提示。它可以识别：
+
+- `shell`
+- `pager`，例如 `less`、`more`、`man`
+- `editor`，例如 `vim`、`nano`
+- `monitor`，例如 `top`、`htop`
+- `repl`，例如数据库 shell 或语言 REPL
+- `prompt`，例如密码、yes/no、y/n 等交互提示
+- `blank`、`closed` 或 `unknown`
+
+返回结果包含 `mode`、`detectedProgram`、`confidence`、`hints`、`recommendedKeys` 和当前 `screen` 快照。
+
+### 可选本地 Terminal 镜像
+
+镜像默认关闭。只有在你要求时，Codex 才会打开本机 Terminal.app 窗口：
+
+```json
+{
+  "session": "dev"
+}
+```
+
+对已有会话调用 `ssh_mac_show_terminal`，可以打开一个只读的 Terminal.app 镜像窗口。也可以在调用 `ssh_mac_open_terminal` 时传入 `"show": true`。
+
+镜像窗口会 `tail -f` 查看 `state/mirrors/` 下的会话 transcript。Codex 仍然通过 MCP 工具控制真正的 PTY 输入；Terminal.app 窗口只是给你旁观，不建议在里面输入。用 `ssh_mac_hide_terminal` 可以停止继续写入镜像 transcript。Terminal 的 tail 窗口可能仍会保留，手动关闭即可。
+
+只有当你想让每个新会话都自动请求镜像窗口时，才设置：
+
+```text
+SSH_BRIDGE_MAC_SHOW_ON_OPEN=true
+```
+
+### 安全说明
+
+这个插件比原来的结构化 `ssh-bridge` 更接近真实终端，因此能力更强，也更容易误操作。
+
+涉及审计文件写入、部署计划、生产审批、策略控制时，优先使用原来的跨平台 `ssh-bridge`。只有任务确实需要交互式终端行为时，再使用这个 Mac PTY 版本。
+
+## English
+
+`SSH Bridge Mac` is a macOS-only Codex plugin for real PTY-backed interactive SSH terminal sessions.
+
+This repository is separate from the cross-platform `ssh-bridge` plugin. It keeps the same plugin name, `ssh-bridge`, but focuses on terminal-like interaction on macOS by running `ssh -tt` behind a small Python `pty` helper, which gives the remote process a real pseudo-terminal.
+
+### Why Mac Only
+
+macOS provides Unix-like SSH tooling and Python's standard `pty` module out of the box. That lets the plugin support interactive programs more naturally than a plain `spawn("ssh")` pipe.
+
+This version is intended for workflows such as:
+
+- opening an interactive SSH shell
+- running commands that expect a TTY
+- using `top`, `less`, REPLs, installers, and menu-driven commands
+- reading terminal output incrementally
+- sending raw keystrokes such as `q`, `Ctrl-C`, or arrow/control sequences
+
+### Tools
+
+- `ssh_mac_list_hosts`
+- `ssh_mac_open_terminal`
+- `ssh_mac_send`
+- `ssh_mac_read`
+- `ssh_mac_screen`
+- `ssh_mac_key`
+- `ssh_mac_wait_for_text`
+- `ssh_mac_terminal_state`
+- `ssh_mac_show_terminal`
+- `ssh_mac_hide_terminal`
+- `ssh_mac_resize`
+- `ssh_mac_list_sessions`
+- `ssh_mac_close`
+
+### Quick Start
 
 1. Edit [hosts.json](./hosts.json).
 2. Make sure your Mac can SSH to the target without a password prompt:
@@ -66,7 +212,7 @@ ssh user@host
 7. For terminal-like operation, prefer `ssh_mac_screen` for the current screen and `ssh_mac_key` for common keys.
 8. When you want to watch Codex operate, call `ssh_mac_show_terminal` for the session.
 
-## Keystrokes
+### Keystrokes
 
 Send raw control characters when needed:
 
@@ -96,11 +242,11 @@ Or use `ssh_mac_key` with names such as:
 - `delete`
 - `backspace`
 
-## Screen Snapshots
+### Screen Snapshots
 
 `ssh_mac_screen` keeps a best-effort terminal screen model from ANSI output. It tracks rows, columns, cursor position, screen clears, line clears, and common cursor movement sequences. This makes Codex behave more like it is looking at the current terminal screen instead of only reading an output log.
 
-## Terminal State Detection
+### Terminal State Detection
 
 `ssh_mac_terminal_state` classifies the current screen and returns hints for what Codex should do next. It can identify common states such as:
 
@@ -114,7 +260,7 @@ Or use `ssh_mac_key` with names such as:
 
 The result includes `mode`, `detectedProgram`, `confidence`, `hints`, `recommendedKeys`, and the current `screen` snapshot.
 
-## Optional Local Terminal Mirror
+### Optional Local Terminal Mirror
 
 Mirroring is off by default. Codex can open a local Terminal.app window only when requested:
 
@@ -130,7 +276,7 @@ The mirror tails a session transcript under `state/mirrors/`. Codex still contro
 
 Set `SSH_BRIDGE_MAC_SHOW_ON_OPEN=true` only if you want every new session to request a mirror window automatically.
 
-## Safety Notes
+### Safety Notes
 
 This plugin is intentionally closer to a real terminal than the original structured SSH Bridge. It is therefore more powerful and easier to misuse.
 
