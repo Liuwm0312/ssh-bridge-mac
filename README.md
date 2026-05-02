@@ -40,6 +40,11 @@ macOS 自带类 Unix 的 SSH 工具和 Python 标准库 `pty` 模块。相比普
 - `ssh_mac_host_profile`
 - `ssh_mac_fleet_summary`
 - `ssh_mac_session_record`
+- `ssh_mac_session_replay`
+- `ssh_mac_read_file`
+- `ssh_mac_backup_file`
+- `ssh_mac_diff_file`
+- `ssh_mac_write_file`
 - `ssh_mac_close`
 
 ### 快速开始
@@ -130,6 +135,7 @@ ssh user@host
 - `ssh_mac_run_visible`：发送一条 shell 命令并回车，镜像窗口会显示 `$ command`，然后返回当前屏幕和状态。
 - `ssh_mac_expect`：等待多个候选文本之一出现，适合菜单、提示符和交互安装流程。
 - `ssh_mac_session_record`：导出当前会话 transcript，可用于复盘或生成操作记录。
+- `ssh_mac_session_replay`：导出一个本地 shell replay 脚本，用于近似回放会话 transcript。
 
 ### 多主机与硬件画像
 
@@ -137,6 +143,15 @@ ssh user@host
 - `ssh_mac_fleet_summary`：对配置中的多台主机批量巡检，返回结构化结果和 TSV 表格。
 
 硬件画像会尽量识别 Jetson、Raspberry Pi、x86 Intel/AMD 和普通 ARM Linux。Jetson 会探测 `jtop`、`tegrastats`，Raspberry Pi 会探测 `vcgencmd` 和设备树型号。
+
+### 安全文件操作
+
+- `ssh_mac_read_file`：读取远端文本文件。
+- `ssh_mac_backup_file`：创建带时间戳的远端文件备份。
+- `ssh_mac_diff_file`：比较远端当前内容和拟写入内容。
+- `ssh_mac_write_file`：写入远端文件，默认要求先看过 diff 并传入 `diffAck: true`，默认会先备份。
+
+这些工具要求远端路径是绝对路径，避免误写当前目录下的未知位置。
 
 ### 可选本地 Terminal 镜像
 
@@ -213,6 +228,11 @@ This version is intended for workflows such as:
 - `ssh_mac_host_profile`
 - `ssh_mac_fleet_summary`
 - `ssh_mac_session_record`
+- `ssh_mac_session_replay`
+- `ssh_mac_read_file`
+- `ssh_mac_backup_file`
+- `ssh_mac_diff_file`
+- `ssh_mac_write_file`
 - `ssh_mac_close`
 
 ### Quick Start
@@ -303,6 +323,7 @@ The result includes `mode`, `detectedProgram`, `confidence`, `hints`, `recommend
 - `ssh_mac_run_visible`: send a shell command with Enter, show `$ command` in the mirror, then return the current screen and state.
 - `ssh_mac_expect`: wait for one of several candidate text fragments, useful for menus, prompts, and interactive installers.
 - `ssh_mac_session_record`: export the current session transcript for review or operation records.
+- `ssh_mac_session_replay`: export a local shell replay script that approximates the session transcript.
 
 ### Fleet And Hardware Profiles
 
@@ -310,6 +331,15 @@ The result includes `mode`, `detectedProgram`, `confidence`, `hints`, `recommend
 - `ssh_mac_fleet_summary`: inspect multiple configured hosts and return structured results plus a TSV table.
 
 Hardware detection tries to identify Jetson, Raspberry Pi, x86 Intel/AMD, and generic ARM Linux. Jetson probes include `jtop` and `tegrastats`; Raspberry Pi probes include `vcgencmd` and the device-tree model.
+
+### Safer File Operations
+
+- `ssh_mac_read_file`: read a remote text file.
+- `ssh_mac_backup_file`: create a timestamped remote backup.
+- `ssh_mac_diff_file`: compare current remote content with proposed replacement content.
+- `ssh_mac_write_file`: write a remote file, requiring `diffAck: true` after reviewing the diff and backing up by default.
+
+These tools require absolute remote paths to avoid writing to an unexpected working directory.
 
 ### Optional Local Terminal Mirror
 

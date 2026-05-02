@@ -27,6 +27,8 @@ Use this skill for the Mac-only interactive PTY version of SSH Bridge.
 - Use `ssh_mac_host_profile` for one-host inventory and hardware detection.
 - Use `ssh_mac_fleet_summary` when the user asks about multiple configured hosts.
 - Use `ssh_mac_session_record` when the user wants a transcript, record, or recap of an interactive session.
+- Use `ssh_mac_session_replay` when the user wants a best-effort replay script for a session.
+- Use `ssh_mac_read_file`, `ssh_mac_backup_file`, `ssh_mac_diff_file`, and `ssh_mac_write_file` for safer remote file edits.
 - Use `ssh_mac_close` when the session is no longer needed.
 
 ## Interaction Rules
@@ -43,6 +45,8 @@ Use this skill for the Mac-only interactive PTY version of SSH Bridge.
   - `\u0004` for Ctrl-D.
   - `\u001b` for Escape.
 - Prefer short, observable steps. Do not send a long destructive command chain into an interactive terminal.
+- Before writing a remote file, prefer `ssh_mac_diff_file`; call `ssh_mac_write_file` only after the diff is reviewed and `diffAck` is true.
+- Use absolute remote paths for file tools.
 - Close idle sessions when finished.
 
 ## Safety

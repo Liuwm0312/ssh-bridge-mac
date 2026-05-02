@@ -5,7 +5,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 
-const SERVER_INFO = { name: "ssh-bridge", version: "0.6.0" };
+const SERVER_INFO = { name: "ssh-bridge", version: "0.7.0" };
 const PROTOCOL_VERSION = "2025-03-26";
 const sessions = new Map();
 
@@ -173,7 +173,8 @@ const toolDefinitions = [
     inputSchema: {
       type: "object",
       properties: {
-        session: { type: "string", description: "Session name." }
+        session: { type: "string", description: "Session name." },
+        closeTail: { type: "boolean", description: "Try to stop the Terminal tail process for this mirror transcript.", default: false }
       },
       required: ["session"]
     }
@@ -234,6 +235,74 @@ const toolDefinitions = [
         stripAnsi: { type: "boolean", description: "Remove ANSI escape sequences from transcript text.", default: true }
       },
       required: ["session"]
+    }
+  },
+  {
+    name: "ssh_mac_session_replay",
+    description: "Export a best-effort local shell replay script for a PTY session transcript.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        session: { type: "string", description: "Session name." },
+        delaySec: { type: "number", description: "Delay between transcript events.", default: 0.15 }
+      },
+      required: ["session"]
+    }
+  },
+  {
+    name: "ssh_mac_read_file",
+    description: "Read a remote text file through non-interactive SSH.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        host: { type: "string", description: "Host alias, hostname, or IP address." },
+        path: { type: "string", description: "Absolute remote file path." },
+        timeoutSec: { type: "integer", description: "SSH timeout in seconds.", default: 15 }
+      },
+      required: ["host", "path"]
+    }
+  },
+  {
+    name: "ssh_mac_backup_file",
+    description: "Create a timestamped backup copy of a remote file.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        host: { type: "string", description: "Host alias, hostname, or IP address." },
+        path: { type: "string", description: "Absolute remote file path." },
+        timeoutSec: { type: "integer", description: "SSH timeout in seconds.", default: 15 }
+      },
+      required: ["host", "path"]
+    }
+  },
+  {
+    name: "ssh_mac_diff_file",
+    description: "Show a unified diff between a remote file and proposed replacement text.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        host: { type: "string", description: "Host alias, hostname, or IP address." },
+        path: { type: "string", description: "Absolute remote file path." },
+        content: { type: "string", description: "Proposed full replacement content." },
+        timeoutSec: { type: "integer", description: "SSH timeout in seconds.", default: 15 }
+      },
+      required: ["host", "path", "content"]
+    }
+  },
+  {
+    name: "ssh_mac_write_file",
+    description: "Safely replace a remote text file, optionally requiring backup and diff acknowledgement.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        host: { type: "string", description: "Host alias, hostname, or IP address." },
+        path: { type: "string", description: "Absolute remote file path." },
+        content: { type: "string", description: "Full replacement content." },
+        backup: { type: "boolean", description: "Create a timestamped backup before writing.", default: true },
+        diffAck: { type: "boolean", description: "Set true after reviewing ssh_mac_diff_file output.", default: false },
+        timeoutSec: { type: "integer", description: "SSH timeout in seconds.", default: 15 }
+      },
+      required: ["host", "path", "content"]
     }
   },
   {
@@ -372,8 +441,45 @@ function runSshBatch(target, command, timeoutSec) {
   };
 }
 
+function runSshBatchWithInput(target, command, input, timeoutSec) {
+  const args = [...sshBatchArgs(target, timeoutSec), command];
+  const result = spawnSync("ssh", args, {
+    input,
+    encoding: "utf8",
+    timeout: timeoutSec * 1000,
+    windowsHide: true
+  });
+  return {
+    ok: result.status === 0,
+    exitCode: result.status,
+    stdout: result.stdout || "",
+    stderr: result.stderr || "",
+    error: result.error ? result.error.message : "",
+    command: "ssh",
+    args
+  };
+}
+
 function remoteShellQuote(value) {
   return `'${String(value).replace(/'/g, `'\\''`)}'`;
+}
+
+function requireAbsoluteRemotePath(filePath) {
+  const value = String(filePath || "").trim();
+  if (!value.startsWith("/")) {
+    throw new Error("Remote file path must be absolute.");
+  }
+  if (value.includes("\0")) {
+    throw new Error("Remote file path contains a null byte.");
+  }
+  return value;
+}
+
+function resolveTargetWithTimeout(args) {
+  return {
+    target: resolveTarget(args),
+    timeoutSec: Number.isInteger(args.timeoutSec) ? args.timeoutSec : 15
+  };
 }
 
 function profileCommand() {
@@ -479,6 +585,7 @@ function appendChunk(session, stream, text) {
     text
   };
   session.chunks.push(chunk);
+  session.events.push({ type: stream, seq: chunk.seq, at: chunk.at, text });
   if (stream === "stdout" || stream === "stderr") {
     feedScreen(session.screen, text);
     appendMirrorOutput(session, text);
@@ -538,6 +645,15 @@ function appendMirrorInput(session, input, label = "input") {
     session.mirror.lastError = error.message;
     session.mirror.enabled = false;
   }
+}
+
+function recordInputEvent(session, input, label = "input") {
+  session.events.push({
+    type: label,
+    seq: ++session.eventSeq,
+    at: new Date().toISOString(),
+    text: String(input ?? "")
+  });
 }
 
 function formatMirrorInput(input, label) {
@@ -612,7 +728,7 @@ function openTerminalMirror(session, options = {}) {
   };
 }
 
-function stopTerminalMirror(session) {
+function stopTerminalMirror(session, options = {}) {
   if (!session.mirror) createMirror(session);
   session.mirror.enabled = false;
   try {
@@ -620,12 +736,21 @@ function stopTerminalMirror(session) {
   } catch (error) {
     session.mirror.lastError = error.message;
   }
+  if (options.closeTail) {
+    stopMirrorTail(session);
+  }
   return {
     enabled: false,
     filePath: session.mirror.filePath,
     title: session.mirror.title,
     note: "New PTY output will no longer be mirrored. The Terminal tail window may remain open until closed."
   };
+}
+
+function stopMirrorTail(session) {
+  if (!session.mirror?.filePath) return;
+  const pattern = `tail -n +1 -f ${session.mirror.filePath}`;
+  spawnSync("pkill", ["-f", pattern], { encoding: "utf8", windowsHide: true });
 }
 
 function sessionSummary(session) {
@@ -667,7 +792,8 @@ function createScreen(rows, cols) {
     cols,
     cursorRow: 0,
     cursorCol: 0,
-    lines: Array.from({ length: rows }, () => Array(cols).fill(" "))
+    lines: Array.from({ length: rows }, () => Array(cols).fill(" ")),
+    alternateScreen: false
   };
 }
 
@@ -740,6 +866,16 @@ function putChar(screen, char) {
 }
 
 function handleCsi(screen, paramsText, command) {
+  if (paramsText.includes("?1049") && command === "h") {
+    screen.alternateScreen = true;
+    clearScreen(screen, 2);
+    return;
+  }
+  if (paramsText.includes("?1049") && command === "l") {
+    screen.alternateScreen = false;
+    clearScreen(screen, 2);
+    return;
+  }
   const clean = paramsText.replace(/[?=]/g, "");
   const params = clean.split(";").filter(Boolean).map((item) => Number.parseInt(item, 10));
   const first = Number.isFinite(params[0]) ? params[0] : 0;
@@ -811,6 +947,7 @@ function screenSnapshot(session, trimRight = true) {
       row: session.screen.cursorRow + 1,
       col: session.screen.cursorCol + 1
     },
+    alternateScreen: Boolean(session.screen.alternateScreen),
     text: lines.join("\n"),
     lines
   };
@@ -995,7 +1132,9 @@ function openTerminal(args) {
     exitCode: null,
     signal: null,
     screen: createScreen(rows, cols),
-    mirror: null
+    mirror: null,
+    events: [],
+    eventSeq: 0
   };
   createMirror(session);
   sessions.set(name, session);
@@ -1027,6 +1166,9 @@ function sendInput(args) {
   const input = String(args.input ?? "");
   if (args.mirror !== false) {
     appendMirrorInput(session, input, "input");
+  }
+  if (args.recordInput !== false) {
+    recordInputEvent(session, input, "input");
   }
   session.child.stdin.write(input);
   return { ok: true, writtenBytes: Buffer.byteLength(input, "utf8"), session: sessionSummary(session) };
@@ -1076,7 +1218,7 @@ function showTerminal(args) {
 
 function hideTerminal(args) {
   const session = requireSession(args.session);
-  return { ok: true, session: sessionSummary(session), mirror: stopTerminalMirror(session) };
+  return { ok: true, session: sessionSummary(session), mirror: stopTerminalMirror(session, { closeTail: Boolean(args.closeTail) }) };
 }
 
 function sendKey(args) {
@@ -1084,7 +1226,8 @@ function sendKey(args) {
   const input = keySequence(args.key).repeat(repeat);
   const session = requireSession(args.session);
   appendMirrorInput(session, repeat > 1 ? `${args.key} x${repeat}` : String(args.key), "key");
-  return { ...sendInput({ session: args.session, input, mirror: false }), key: args.key, repeat };
+  recordInputEvent(session, repeat > 1 ? `${args.key} x${repeat}` : String(args.key), "key");
+  return { ...sendInput({ session: args.session, input, mirror: false, recordInput: false }), key: args.key, repeat };
 }
 
 function hasText(session, text, includeBuffer) {
@@ -1297,6 +1440,104 @@ function toolSessionRecord(args) {
   };
 }
 
+function toolSessionReplay(args) {
+  const session = requireSession(args.session);
+  const delaySec = Number.isFinite(Number(args.delaySec)) ? Math.max(0, Math.min(Number(args.delaySec), 5)) : 0.15;
+  const lines = [
+    "#!/usr/bin/env bash",
+    "set -euo pipefail",
+    `echo ${shellQuote(`Replay for SSH Bridge session ${session.name}`)}`,
+    `echo ${shellQuote(`Target: ${session.target.user ? `${session.target.user}@` : ""}${session.target.host}:${session.target.port}`)}`,
+    "echo"
+  ];
+  for (const event of session.events) {
+    const text = event.type === "key"
+      ? `\n[ssh-bridge-mac key] ${event.text}\n`
+      : event.text;
+    lines.push(`printf %s ${shellQuote(stripAnsi(text))}`);
+    if (delaySec > 0) lines.push(`sleep ${delaySec}`);
+  }
+  return {
+    ok: true,
+    session: sessionSummary(session),
+    exportText: lines.join("\n")
+  };
+}
+
+function simpleUnifiedDiff(oldText, newText, oldLabel, newLabel) {
+  const oldLines = String(oldText || "").split("\n");
+  const newLines = String(newText || "").split("\n");
+  const max = Math.max(oldLines.length, newLines.length);
+  const body = [];
+  for (let index = 0; index < max; index += 1) {
+    const oldLine = oldLines[index];
+    const newLine = newLines[index];
+    if (oldLine === newLine) {
+      if (oldLine !== undefined) body.push(` ${oldLine}`);
+    } else {
+      if (oldLine !== undefined) body.push(`-${oldLine}`);
+      if (newLine !== undefined) body.push(`+${newLine}`);
+    }
+  }
+  return [`--- ${oldLabel}`, `+++ ${newLabel}`, "@@", ...body].join("\n");
+}
+
+function toolReadFile(args) {
+  const { target, timeoutSec } = resolveTargetWithTimeout(args);
+  const remotePath = requireAbsoluteRemotePath(args.path);
+  const result = runSshBatch(target, `cat -- ${remoteShellQuote(remotePath)}`, timeoutSec);
+  return { ok: result.ok, target, path: remotePath, content: result.stdout, stderr: result.stderr, exitCode: result.exitCode };
+}
+
+function toolBackupFile(args) {
+  const { target, timeoutSec } = resolveTargetWithTimeout(args);
+  const remotePath = requireAbsoluteRemotePath(args.path);
+  const stamp = new Date().toISOString().replace(/[-:TZ.]/g, "").slice(0, 14);
+  const backupPath = `${remotePath}.ssh-bridge-backup-${stamp}`;
+  const command = `set -e; cp -- ${remoteShellQuote(remotePath)} ${remoteShellQuote(backupPath)}; printf %s ${remoteShellQuote(backupPath)}`;
+  const result = runSshBatch(target, command, timeoutSec);
+  return { ok: result.ok, target, path: remotePath, backupPath, stdout: result.stdout, stderr: result.stderr, exitCode: result.exitCode };
+}
+
+function toolDiffFile(args) {
+  const current = toolReadFile(args);
+  const proposed = String(args.content ?? "");
+  return {
+    ok: current.ok,
+    target: current.target,
+    path: current.path,
+    diff: simpleUnifiedDiff(current.content, proposed, `${current.path} current`, `${current.path} proposed`),
+    stderr: current.stderr
+  };
+}
+
+function toolWriteFile(args) {
+  const { target, timeoutSec } = resolveTargetWithTimeout(args);
+  const remotePath = requireAbsoluteRemotePath(args.path);
+  const content = String(args.content ?? "");
+  const backup = args.backup !== false;
+  if (args.diffAck !== true) {
+    throw new Error("ssh_mac_write_file requires diffAck=true after reviewing ssh_mac_diff_file output.");
+  }
+  const backupResult = backup ? toolBackupFile({ ...args, path: remotePath, timeoutSec }) : null;
+  const encoded = Buffer.from(content, "utf8").toString("base64");
+  const tmpPath = `${remotePath}.ssh-bridge-tmp-${Date.now()}`;
+  const command = [
+    "set -e",
+    `base64 -d > ${remoteShellQuote(tmpPath)}`,
+    `mv -- ${remoteShellQuote(tmpPath)} ${remoteShellQuote(remotePath)}`
+  ].join("; ");
+  const result = runSshBatchWithInput(target, command, encoded, timeoutSec);
+  return {
+    ok: result.ok,
+    target,
+    path: remotePath,
+    backupPath: backupResult?.backupPath || "",
+    stderr: result.stderr,
+    exitCode: result.exitCode
+  };
+}
+
 function resizeTerminal(args) {
   const session = requireSession(args.session);
   const cols = Number.isInteger(args.cols) ? args.cols : session.cols;
@@ -1365,6 +1606,16 @@ async function callTool(name, args = {}) {
       return toolFleetSummary(args);
     case "ssh_mac_session_record":
       return toolSessionRecord(args);
+    case "ssh_mac_session_replay":
+      return toolSessionReplay(args);
+    case "ssh_mac_read_file":
+      return toolReadFile(args);
+    case "ssh_mac_backup_file":
+      return toolBackupFile(args);
+    case "ssh_mac_diff_file":
+      return toolDiffFile(args);
+    case "ssh_mac_write_file":
+      return toolWriteFile(args);
     case "ssh_mac_close":
       return closeTerminal(args);
     default:
