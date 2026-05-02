@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 
-const { spawn } = require("node:child_process");
+const { spawn, spawnSync } = require("node:child_process");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 
-const SERVER_INFO = { name: "ssh-bridge", version: "0.5.0" };
+const SERVER_INFO = { name: "ssh-bridge", version: "0.6.0" };
 const PROTOCOL_VERSION = "2025-03-26";
 const sessions = new Map();
 
@@ -103,6 +103,48 @@ const toolDefinitions = [
     }
   },
   {
+    name: "ssh_mac_type_and_wait",
+    description: "Send terminal input, then wait for text to appear and return the current screen and state.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        session: { type: "string", description: "Session name." },
+        input: { type: "string", description: "Text to send. Include \\n for Enter." },
+        waitForText: { type: "string", description: "Optional text to wait for after sending input." },
+        timeoutMs: { type: "integer", description: "Maximum wait in milliseconds.", default: 5000 }
+      },
+      required: ["session", "input"]
+    }
+  },
+  {
+    name: "ssh_mac_run_visible",
+    description: "Send a shell command with Enter, mirror it visibly, wait briefly, and return screen and terminal state.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        session: { type: "string", description: "Session name." },
+        command: { type: "string", description: "Shell command to run." },
+        waitForText: { type: "string", description: "Optional text to wait for after running the command." },
+        timeoutMs: { type: "integer", description: "Maximum wait in milliseconds.", default: 5000 }
+      },
+      required: ["session", "command"]
+    }
+  },
+  {
+    name: "ssh_mac_expect",
+    description: "Wait for any one of several text candidates, then return which candidate matched.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        session: { type: "string", description: "Session name." },
+        texts: { type: "array", items: { type: "string" }, description: "Candidate text fragments to wait for." },
+        timeoutMs: { type: "integer", description: "Maximum wait in milliseconds.", default: 5000 },
+        includeBuffer: { type: "boolean", description: "Also search buffered output chunks.", default: true }
+      },
+      required: ["session", "texts"]
+    }
+  },
+  {
     name: "ssh_mac_terminal_state",
     description: "Classify the current terminal state, including likely full-screen programs and recommended keys.",
     inputSchema: {
@@ -153,6 +195,46 @@ const toolDefinitions = [
     name: "ssh_mac_list_sessions",
     description: "List open Mac PTY SSH terminal sessions.",
     inputSchema: { type: "object", properties: {} }
+  },
+  {
+    name: "ssh_mac_host_profile",
+    description: "Collect a non-interactive OS, CPU, memory, disk, network, and hardware profile for a configured host.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        host: { type: "string", description: "Host alias, hostname, or IP address." },
+        user: { type: "string", description: "Remote username override." },
+        port: { type: "integer", description: "SSH port override." },
+        identityFile: { type: "string", description: "Local private key path override." },
+        timeoutSec: { type: "integer", description: "SSH timeout in seconds.", default: 15 }
+      },
+      required: ["host"]
+    }
+  },
+  {
+    name: "ssh_mac_fleet_summary",
+    description: "Collect concise profiles for multiple configured hosts or all hosts matching a tag.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        hosts: { type: "array", items: { type: "string" }, description: "Host aliases to inspect. Defaults to all configured hosts." },
+        tag: { type: "string", description: "Optional tag filter when hosts is omitted." },
+        timeoutSec: { type: "integer", description: "SSH timeout in seconds per host.", default: 15 }
+      }
+    }
+  },
+  {
+    name: "ssh_mac_session_record",
+    description: "Export the current buffered transcript for a PTY session as text, JSON, or Markdown.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        session: { type: "string", description: "Session name." },
+        format: { type: "string", enum: ["text", "json", "markdown"], description: "Export format.", default: "markdown" },
+        stripAnsi: { type: "boolean", description: "Remove ANSI escape sequences from transcript text.", default: true }
+      },
+      required: ["session"]
+    }
   },
   {
     name: "ssh_mac_close",
@@ -257,6 +339,131 @@ function sshArgs(target, args) {
   result.push(remote);
   if (args.command) result.push(String(args.command));
   return result;
+}
+
+function sshBatchArgs(target, timeoutSec) {
+  const remote = target.user ? `${target.user}@${target.host}` : target.host;
+  const result = [
+    "-o", "BatchMode=yes",
+    "-o", `StrictHostKeyChecking=${getEnv("SSH_BRIDGE_MAC_STRICT_HOST_KEY_CHECKING", "accept-new")}`,
+    "-o", `ConnectTimeout=${timeoutSec}`,
+    "-p", String(target.port)
+  ];
+  if (target.identityFile) result.push("-i", target.identityFile);
+  result.push(remote);
+  return result;
+}
+
+function runSshBatch(target, command, timeoutSec) {
+  const args = [...sshBatchArgs(target, timeoutSec), command];
+  const result = spawnSync("ssh", args, {
+    encoding: "utf8",
+    timeout: timeoutSec * 1000,
+    windowsHide: true
+  });
+  return {
+    ok: result.status === 0,
+    exitCode: result.status,
+    stdout: result.stdout || "",
+    stderr: result.stderr || "",
+    error: result.error ? result.error.message : "",
+    command: "ssh",
+    args
+  };
+}
+
+function remoteShellQuote(value) {
+  return `'${String(value).replace(/'/g, `'\\''`)}'`;
+}
+
+function profileCommand() {
+  return [
+    "printf '__SSH_BRIDGE_SECTION__ identity\\n'",
+    "printf 'user=%s\\n' \"$(whoami 2>/dev/null)\"",
+    "printf 'hostname=%s\\n' \"$(hostname 2>/dev/null)\"",
+    "printf 'kernel=%s\\n' \"$(uname -a 2>/dev/null)\"",
+    "printf 'arch=%s\\n' \"$(uname -m 2>/dev/null)\"",
+    "printf '__SSH_BRIDGE_SECTION__ os\\n'",
+    "cat /etc/os-release 2>/dev/null || true",
+    "printf '__SSH_BRIDGE_SECTION__ uptime\\n'",
+    "uptime 2>/dev/null || true",
+    "printf '__SSH_BRIDGE_SECTION__ cpu\\n'",
+    "lscpu 2>/dev/null | sed -n '1,24p' || true",
+    "printf '__SSH_BRIDGE_SECTION__ memory\\n'",
+    "free -h 2>/dev/null || true",
+    "printf '__SSH_BRIDGE_SECTION__ disk\\n'",
+    "df -h 2>/dev/null || true",
+    "printf '__SSH_BRIDGE_SECTION__ network\\n'",
+    "ip -brief addr 2>/dev/null || ifconfig 2>/dev/null || true",
+    "printf '__SSH_BRIDGE_SECTION__ hardware\\n'",
+    "if [ -r /proc/device-tree/model ]; then tr -d '\\0' < /proc/device-tree/model; printf '\\n'; fi",
+    "if [ -f /etc/nv_tegra_release ]; then cat /etc/nv_tegra_release; fi",
+    "command -v jtop >/dev/null 2>&1 && jtop --version 2>/dev/null || true",
+    "command -v tegrastats >/dev/null 2>&1 && echo 'tegrastats available' || true",
+    "command -v vcgencmd >/dev/null 2>&1 && vcgencmd measure_temp 2>/dev/null || true",
+    "command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv,noheader 2>/dev/null || true"
+  ].join("; ");
+}
+
+function parseSections(text) {
+  const sections = {};
+  let current = "output";
+  for (const line of String(text || "").split(/\r?\n/)) {
+    const match = /^__SSH_BRIDGE_SECTION__\s+(.+)$/.exec(line);
+    if (match) {
+      current = match[1].trim();
+      if (!sections[current]) sections[current] = [];
+      continue;
+    }
+    if (!sections[current]) sections[current] = [];
+    sections[current].push(line);
+  }
+  return Object.fromEntries(Object.entries(sections).map(([key, lines]) => [key, lines.join("\n").trim()]));
+}
+
+function firstMatch(text, regex, fallback = "") {
+  const match = regex.exec(String(text || ""));
+  return match ? match[1].trim() : fallback;
+}
+
+function summarizeProfile(target, result) {
+  const sections = parseSections(result.stdout);
+  const identity = sections.identity || "";
+  const osText = sections.os || "";
+  const cpuText = sections.cpu || "";
+  const memoryText = sections.memory || "";
+  const diskText = sections.disk || "";
+  const networkText = sections.network || "";
+  const hardwareText = sections.hardware || "";
+  const hardwareKind = detectHardwareKind({ identity, osText, cpuText, hardwareText });
+  return {
+    target,
+    ok: result.ok,
+    exitCode: result.exitCode,
+    error: result.error || result.stderr,
+    summary: {
+      user: firstMatch(identity, /^user=(.+)$/m),
+      hostname: firstMatch(identity, /^hostname=(.+)$/m),
+      arch: firstMatch(identity, /^arch=(.+)$/m),
+      os: firstMatch(osText, /^PRETTY_NAME="?([^"\n]+)"?/m),
+      cpu: firstMatch(cpuText, /^Model name:\s+(.+)$/m) || firstMatch(cpuText, /^Hardware:\s+(.+)$/m),
+      memory: firstMatch(memoryText, /^Mem:\s+(.+)$/m),
+      rootDisk: firstMatch(diskText, /^(\S+\s+\S+\s+\S+\s+\S+\s+\S+\s+\/)$/m),
+      primaryAddress: firstMatch(networkText, /(?:UP|UNKNOWN)\s+([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+\/\d+)/m),
+      hardwareKind
+    },
+    sections
+  };
+}
+
+function detectHardwareKind({ cpuText, hardwareText }) {
+  const joined = `${cpuText}\n${hardwareText}`.toLowerCase();
+  if (joined.includes("tegra") || joined.includes("jtop") || joined.includes("tegrastats")) return "jetson";
+  if (joined.includes("raspberry pi") || joined.includes("vcgencmd") || joined.includes("cortex-a72")) return "raspberry-pi";
+  if (joined.includes("genuineintel") || joined.includes("intel(") || joined.includes("intel(r)")) return "x86-intel";
+  if (joined.includes("amd")) return "x86-amd";
+  if (joined.includes("aarch64") || joined.includes("cortex")) return "arm-linux";
+  return "linux";
 }
 
 function maxBufferBytes() {
@@ -909,6 +1116,187 @@ async function waitForText(args) {
   return { ok: true, found: false, elapsedMs: Date.now() - startedAt, session: sessionSummary(session), screen: screenSnapshot(session, true) };
 }
 
+function findTextCandidate(session, texts, includeBuffer) {
+  for (const text of texts) {
+    if (hasText(session, text, includeBuffer)) return text;
+  }
+  return "";
+}
+
+async function expectText(args) {
+  const session = requireSession(args.session);
+  const texts = Array.isArray(args.texts) ? args.texts.map(String).filter(Boolean) : [];
+  if (!texts.length) throw new Error("ssh_mac_expect requires at least one text candidate.");
+  const timeoutMs = Number.isInteger(args.timeoutMs) ? Math.max(0, Math.min(args.timeoutMs, 60000)) : 5000;
+  const includeBuffer = args.includeBuffer !== false;
+  const startedAt = Date.now();
+  while (Date.now() - startedAt <= timeoutMs) {
+    const matched = findTextCandidate(session, texts, includeBuffer);
+    if (matched) {
+      return {
+        ok: true,
+        found: true,
+        matched,
+        elapsedMs: Date.now() - startedAt,
+        session: sessionSummary(session),
+        state: terminalState(session)
+      };
+    }
+    await sleep(100);
+  }
+  return {
+    ok: true,
+    found: false,
+    matched: "",
+    elapsedMs: Date.now() - startedAt,
+    session: sessionSummary(session),
+    state: terminalState(session)
+  };
+}
+
+async function typeAndWait(args) {
+  sendInput({ session: args.session, input: String(args.input ?? "") });
+  if (args.waitForText) {
+    await waitForText({
+      session: args.session,
+      text: String(args.waitForText),
+      timeoutMs: args.timeoutMs,
+      includeBuffer: true
+    });
+  } else {
+    await sleep(Number.isInteger(args.timeoutMs) ? Math.min(args.timeoutMs, 1000) : 250);
+  }
+  const session = requireSession(args.session);
+  return {
+    ok: true,
+    session: sessionSummary(session),
+    screen: screenSnapshot(session, true),
+    state: terminalState(session)
+  };
+}
+
+async function runVisible(args) {
+  const command = String(args.command || "").trim();
+  if (!command) throw new Error("ssh_mac_run_visible requires command.");
+  return typeAndWait({
+    session: args.session,
+    input: `${command}\n`,
+    waitForText: args.waitForText,
+    timeoutMs: args.timeoutMs
+  });
+}
+
+function toolHostProfile(args) {
+  const target = resolveTarget(args);
+  const timeoutSec = Number.isInteger(args.timeoutSec) ? args.timeoutSec : 15;
+  const result = runSshBatch(target, profileCommand(), timeoutSec);
+  return summarizeProfile(target, result);
+}
+
+function toolFleetSummary(args) {
+  const profiles = loadHosts();
+  const explicitHosts = Array.isArray(args.hosts) ? args.hosts.map(String).filter(Boolean) : [];
+  const tag = String(args.tag || "").trim().toLowerCase();
+  const aliases = explicitHosts.length
+    ? explicitHosts
+    : Object.entries(profiles)
+      .filter(([_alias, profile]) => !tag || normalizeHost("", profile).tags.some((item) => item.toLowerCase() === tag))
+      .map(([alias]) => alias);
+  const timeoutSec = Number.isInteger(args.timeoutSec) ? args.timeoutSec : 15;
+  const hosts = aliases.map((alias) => {
+    try {
+      return toolHostProfile({ host: alias, timeoutSec });
+    } catch (error) {
+      return {
+        target: { requestedHost: alias },
+        ok: false,
+        exitCode: null,
+        error: error.message,
+        summary: {},
+        sections: {}
+      };
+    }
+  });
+  return {
+    ok: hosts.every((host) => host.ok),
+    count: hosts.length,
+    tag,
+    hosts,
+    table: renderFleetTable(hosts)
+  };
+}
+
+function renderFleetTable(hosts) {
+  const rows = [
+    ["alias", "host", "ok", "hostname", "os", "arch", "hardware", "memory", "rootDisk", "ip"]
+  ];
+  for (const item of hosts) {
+    rows.push([
+      item.target?.alias || item.target?.requestedHost || "",
+      item.target?.host || "",
+      item.ok ? "yes" : "no",
+      item.summary?.hostname || "",
+      item.summary?.os || "",
+      item.summary?.arch || "",
+      item.summary?.hardwareKind || "",
+      item.summary?.memory || "",
+      item.summary?.rootDisk || "",
+      item.summary?.primaryAddress || ""
+    ]);
+  }
+  return rows.map((row) => row.join("\t")).join("\n");
+}
+
+function toolSessionRecord(args) {
+  const session = requireSession(args.session);
+  const format = String(args.format || "markdown").toLowerCase();
+  const strip = args.stripAnsi !== false;
+  const chunks = session.chunks.map((chunk) => ({
+    ...chunk,
+    text: strip ? stripAnsi(chunk.text) : chunk.text
+  }));
+  const transcript = chunks.map((chunk) => chunk.text).join("");
+  if (format === "json") {
+    return {
+      ok: true,
+      session: sessionSummary(session),
+      chunks,
+      screen: screenSnapshot(session, true)
+    };
+  }
+  if (format === "text") {
+    return {
+      ok: true,
+      session: sessionSummary(session),
+      exportText: transcript
+    };
+  }
+  const lines = [
+    `# SSH Bridge Session ${session.name}`,
+    "",
+    `- Target: ${session.target.user ? `${session.target.user}@` : ""}${session.target.host}:${session.target.port}`,
+    `- Created: ${session.createdAt}`,
+    `- Open: ${!session.closed}`,
+    "",
+    "## Transcript",
+    "",
+    "```text",
+    transcript,
+    "```",
+    "",
+    "## Current Screen",
+    "",
+    "```text",
+    screenSnapshot(session, true).text,
+    "```"
+  ];
+  return {
+    ok: true,
+    session: sessionSummary(session),
+    exportText: lines.join("\n")
+  };
+}
+
 function resizeTerminal(args) {
   const session = requireSession(args.session);
   const cols = Number.isInteger(args.cols) ? args.cols : session.cols;
@@ -955,6 +1343,12 @@ async function callTool(name, args = {}) {
       return sendKey(args);
     case "ssh_mac_wait_for_text":
       return waitForText(args);
+    case "ssh_mac_type_and_wait":
+      return typeAndWait(args);
+    case "ssh_mac_run_visible":
+      return runVisible(args);
+    case "ssh_mac_expect":
+      return expectText(args);
     case "ssh_mac_terminal_state":
       return readTerminalState(args);
     case "ssh_mac_show_terminal":
@@ -965,6 +1359,12 @@ async function callTool(name, args = {}) {
       return resizeTerminal(args);
     case "ssh_mac_list_sessions":
       return { ok: true, sessions: [...sessions.values()].map(sessionSummary) };
+    case "ssh_mac_host_profile":
+      return toolHostProfile(args);
+    case "ssh_mac_fleet_summary":
+      return toolFleetSummary(args);
+    case "ssh_mac_session_record":
+      return toolSessionRecord(args);
     case "ssh_mac_close":
       return closeTerminal(args);
     default:

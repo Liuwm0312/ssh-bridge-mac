@@ -16,11 +16,17 @@ Use this skill for the Mac-only interactive PTY version of SSH Bridge.
 - Use `ssh_mac_screen` when you need the current terminal screen rather than raw output history.
 - Use `ssh_mac_key` for named keys such as `enter`, `tab`, `ctrl-c`, `ctrl-d`, `escape`, arrows, `page-up`, and `page-down`.
 - Use `ssh_mac_wait_for_text` after sending input when waiting for a prompt, menu, login banner, or command output.
+- Use `ssh_mac_type_and_wait` for terminal-like "type, wait, inspect" interactions.
+- Use `ssh_mac_run_visible` for normal shell commands when a mirror is enabled so the user sees the command text.
+- Use `ssh_mac_expect` when several prompts or outcomes are possible.
 - Use `ssh_mac_terminal_state` before acting inside full-screen or ambiguous terminal states.
 - Use `ssh_mac_show_terminal` only when the user asks to watch the session locally.
 - Do not call `ssh_mac_show_terminal` repeatedly for the same session unless the user closed the previous mirror and asks to reopen it; use `reopen: true` in that case.
 - Use `ssh_mac_hide_terminal` when the user asks to stop showing local terminal output.
 - Use `ssh_mac_resize` when full-screen output wraps badly.
+- Use `ssh_mac_host_profile` for one-host inventory and hardware detection.
+- Use `ssh_mac_fleet_summary` when the user asks about multiple configured hosts.
+- Use `ssh_mac_session_record` when the user wants a transcript, record, or recap of an interactive session.
 - Use `ssh_mac_close` when the session is no longer needed.
 
 ## Interaction Rules
@@ -29,7 +35,7 @@ Use this skill for the Mac-only interactive PTY version of SSH Bridge.
 - Prefer `ssh_mac_screen` after opening or changing full-screen programs.
 - Prefer `ssh_mac_terminal_state` when the screen may be a pager, editor, monitor, REPL, or interactive prompt.
 - Do not enable local Terminal.app mirroring unless the user asks; the default is headless PTY operation.
-- Send shell commands with a trailing newline, for example `pwd\n`.
+- For shell commands, prefer `ssh_mac_run_visible` over raw `ssh_mac_send` so command text is captured cleanly in mirrors.
 - Prefer `ssh_mac_key` over raw control characters when a named key exists.
 - For full-screen programs, use raw keystrokes deliberately:
   - `q` to quit many pagers and monitors.

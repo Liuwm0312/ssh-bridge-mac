@@ -29,11 +29,17 @@ macOS 自带类 Unix 的 SSH 工具和 Python 标准库 `pty` 模块。相比普
 - `ssh_mac_screen`
 - `ssh_mac_key`
 - `ssh_mac_wait_for_text`
+- `ssh_mac_type_and_wait`
+- `ssh_mac_run_visible`
+- `ssh_mac_expect`
 - `ssh_mac_terminal_state`
 - `ssh_mac_show_terminal`
 - `ssh_mac_hide_terminal`
 - `ssh_mac_resize`
 - `ssh_mac_list_sessions`
+- `ssh_mac_host_profile`
+- `ssh_mac_fleet_summary`
+- `ssh_mac_session_record`
 - `ssh_mac_close`
 
 ### 快速开始
@@ -118,6 +124,20 @@ ssh user@host
 
 返回结果包含 `mode`、`detectedProgram`、`confidence`、`hints`、`recommendedKeys` 和当前 `screen` 快照。
 
+### 终端式工作流工具
+
+- `ssh_mac_type_and_wait`：发送任意输入，然后等待指定文本或短暂等待，返回当前屏幕和状态。
+- `ssh_mac_run_visible`：发送一条 shell 命令并回车，镜像窗口会显示 `$ command`，然后返回当前屏幕和状态。
+- `ssh_mac_expect`：等待多个候选文本之一出现，适合菜单、提示符和交互安装流程。
+- `ssh_mac_session_record`：导出当前会话 transcript，可用于复盘或生成操作记录。
+
+### 多主机与硬件画像
+
+- `ssh_mac_host_profile`：对单台主机做非交互巡检，采集 OS、CPU、内存、磁盘、网络和硬件线索。
+- `ssh_mac_fleet_summary`：对配置中的多台主机批量巡检，返回结构化结果和 TSV 表格。
+
+硬件画像会尽量识别 Jetson、Raspberry Pi、x86 Intel/AMD 和普通 ARM Linux。Jetson 会探测 `jtop`、`tegrastats`，Raspberry Pi 会探测 `vcgencmd` 和设备树型号。
+
 ### 可选本地 Terminal 镜像
 
 镜像默认关闭。只有在你要求时，Codex 才会打开本机 Terminal.app 窗口：
@@ -182,11 +202,17 @@ This version is intended for workflows such as:
 - `ssh_mac_screen`
 - `ssh_mac_key`
 - `ssh_mac_wait_for_text`
+- `ssh_mac_type_and_wait`
+- `ssh_mac_run_visible`
+- `ssh_mac_expect`
 - `ssh_mac_terminal_state`
 - `ssh_mac_show_terminal`
 - `ssh_mac_hide_terminal`
 - `ssh_mac_resize`
 - `ssh_mac_list_sessions`
+- `ssh_mac_host_profile`
+- `ssh_mac_fleet_summary`
+- `ssh_mac_session_record`
 - `ssh_mac_close`
 
 ### Quick Start
@@ -270,6 +296,20 @@ Or use `ssh_mac_key` with names such as:
 - `blank`, `closed`, or `unknown`
 
 The result includes `mode`, `detectedProgram`, `confidence`, `hints`, `recommendedKeys`, and the current `screen` snapshot.
+
+### Terminal Workflow Tools
+
+- `ssh_mac_type_and_wait`: send arbitrary input, then wait for text or briefly pause, returning the current screen and state.
+- `ssh_mac_run_visible`: send a shell command with Enter, show `$ command` in the mirror, then return the current screen and state.
+- `ssh_mac_expect`: wait for one of several candidate text fragments, useful for menus, prompts, and interactive installers.
+- `ssh_mac_session_record`: export the current session transcript for review or operation records.
+
+### Fleet And Hardware Profiles
+
+- `ssh_mac_host_profile`: collect a non-interactive OS, CPU, memory, disk, network, and hardware profile for one host.
+- `ssh_mac_fleet_summary`: inspect multiple configured hosts and return structured results plus a TSV table.
+
+Hardware detection tries to identify Jetson, Raspberry Pi, x86 Intel/AMD, and generic ARM Linux. Jetson probes include `jtop` and `tegrastats`; Raspberry Pi probes include `vcgencmd` and the device-tree model.
 
 ### Optional Local Terminal Mirror
 
