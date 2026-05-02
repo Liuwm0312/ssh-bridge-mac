@@ -5,7 +5,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 
-const SERVER_INFO = { name: "ssh-bridge", version: "0.7.0" };
+const SERVER_INFO = { name: "ssh-bridge", version: "0.8.0" };
 const PROTOCOL_VERSION = "2025-03-26";
 const sessions = new Map();
 
@@ -174,7 +174,8 @@ const toolDefinitions = [
       type: "object",
       properties: {
         session: { type: "string", description: "Session name." },
-        closeTail: { type: "boolean", description: "Try to stop the Terminal tail process for this mirror transcript.", default: false }
+        closeTail: { type: "boolean", description: "Try to stop the Terminal tail process for this mirror transcript.", default: false },
+        closeWindow: { type: "boolean", description: "Try to close the tracked Terminal.app tab/window for this mirror.", default: false }
       },
       required: ["session"]
     }
@@ -621,7 +622,10 @@ function createMirror(session) {
     filePath,
     title,
     openedAt: "",
-    lastError: ""
+    lastError: "",
+    terminalWindowId: null,
+    terminalTabIndex: null,
+    terminalTty: ""
   };
 }
 
@@ -707,16 +711,30 @@ function openTerminalMirror(session, options = {}) {
   const script = [
     'tell application "Terminal"',
     "activate",
-    `do script ${appleScriptString(tailCommand)}`,
+    `set bridgeTab to do script ${appleScriptString(tailCommand)}`,
+    "set bridgeWindow to window of bridgeTab",
+    "set windowId to id of bridgeWindow",
+    "set tabIndex to index of bridgeTab",
+    "set ttyName to tty of bridgeTab",
+    "return (windowId as text) & tab & (tabIndex as text) & tab & ttyName",
     "end tell"
   ].join("\n");
   const result = spawn("osascript", ["-e", script], {
     cwd: getServerRoot(),
     stdio: ["ignore", "pipe", "pipe"]
   });
-  result.stdout.on("data", () => {});
+  let stdout = "";
+  result.stdout.on("data", (data) => {
+    stdout += data.toString("utf8");
+  });
   result.stderr.on("data", (data) => {
     session.mirror.lastError = data.toString("utf8");
+  });
+  result.on("close", () => {
+    const [windowId, tabIndex, ttyName] = stdout.trim().split("\t");
+    if (windowId) session.mirror.terminalWindowId = Number.parseInt(windowId, 10);
+    if (tabIndex) session.mirror.terminalTabIndex = Number.parseInt(tabIndex, 10);
+    if (ttyName) session.mirror.terminalTty = ttyName;
   });
   return {
     enabled: session.mirror.enabled,
@@ -739,11 +757,18 @@ function stopTerminalMirror(session, options = {}) {
   if (options.closeTail) {
     stopMirrorTail(session);
   }
+  if (options.closeWindow) {
+    closeMirrorWindow(session);
+  }
   return {
     enabled: false,
     filePath: session.mirror.filePath,
     title: session.mirror.title,
-    note: "New PTY output will no longer be mirrored. The Terminal tail window may remain open until closed."
+    terminalWindowId: session.mirror.terminalWindowId,
+    terminalTabIndex: session.mirror.terminalTabIndex,
+    note: options.closeWindow
+      ? "New PTY output will no longer be mirrored. A close request was sent for the tracked Terminal.app tab/window."
+      : "New PTY output will no longer be mirrored. The Terminal tail window may remain open until closed."
   };
 }
 
@@ -751,6 +776,36 @@ function stopMirrorTail(session) {
   if (!session.mirror?.filePath) return;
   const pattern = `tail -n +1 -f ${session.mirror.filePath}`;
   spawnSync("pkill", ["-f", pattern], { encoding: "utf8", windowsHide: true });
+}
+
+function closeMirrorWindow(session) {
+  const windowId = session.mirror?.terminalWindowId;
+  const tabIndex = session.mirror?.terminalTabIndex;
+  if (!windowId || !tabIndex || process.platform !== "darwin") return;
+  const script = [
+    'tell application "Terminal"',
+    `set targetWindowId to ${Number(windowId)}`,
+    `set targetTabIndex to ${Number(tabIndex)}`,
+    "repeat with bridgeWindow in windows",
+    "if id of bridgeWindow is targetWindowId then",
+    "try",
+    "close tab targetTabIndex of bridgeWindow",
+    "on error",
+    "try",
+    "close bridgeWindow",
+    "end try",
+    "end try",
+    "exit repeat",
+    "end if",
+    "end repeat",
+    "end tell"
+  ].join("\n");
+  const result = spawnSync("osascript", ["-e", script], {
+    cwd: getServerRoot(),
+    encoding: "utf8",
+    windowsHide: true
+  });
+  if (result.stderr) session.mirror.lastError = result.stderr;
 }
 
 function sessionSummary(session) {
@@ -771,7 +826,9 @@ function sessionSummary(session) {
       filePath: session.mirror.filePath,
       title: session.mirror.title,
       openedAt: session.mirror.openedAt,
-      lastError: session.mirror.lastError
+      lastError: session.mirror.lastError,
+      terminalWindowId: session.mirror.terminalWindowId,
+      terminalTabIndex: session.mirror.terminalTabIndex
     } : null
   };
 }
@@ -792,8 +849,15 @@ function createScreen(rows, cols) {
     cols,
     cursorRow: 0,
     cursorCol: 0,
+    savedCursorRow: 0,
+    savedCursorCol: 0,
+    scrollTop: 0,
+    scrollBottom: rows - 1,
     lines: Array.from({ length: rows }, () => Array(cols).fill(" ")),
-    alternateScreen: false
+    alternateScreen: false,
+    primary: null,
+    title: "",
+    modes: {}
   };
 }
 
@@ -803,6 +867,10 @@ function resizeScreen(screen, rows, cols) {
   screen.cols = cols;
   screen.cursorRow = Math.min(screen.cursorRow, rows - 1);
   screen.cursorCol = Math.min(screen.cursorCol, cols - 1);
+  screen.savedCursorRow = Math.min(screen.savedCursorRow, rows - 1);
+  screen.savedCursorCol = Math.min(screen.savedCursorCol, cols - 1);
+  screen.scrollTop = 0;
+  screen.scrollBottom = rows - 1;
   screen.lines = Array.from({ length: rows }, (_unused, row) => {
     const old = oldLines[row] || [];
     const next = Array(cols).fill(" ");
@@ -813,10 +881,39 @@ function resizeScreen(screen, rows, cols) {
   });
 }
 
-function scrollScreen(screen) {
-  screen.lines.shift();
-  screen.lines.push(Array(screen.cols).fill(" "));
-  screen.cursorRow = screen.rows - 1;
+function blankLine(screen) {
+  return Array(screen.cols).fill(" ");
+}
+
+function cloneLines(lines) {
+  return lines.map((line) => [...line]);
+}
+
+function saveCursor(screen) {
+  screen.savedCursorRow = screen.cursorRow;
+  screen.savedCursorCol = screen.cursorCol;
+}
+
+function restoreCursor(screen) {
+  moveCursor(screen, screen.savedCursorRow, screen.savedCursorCol);
+}
+
+function scrollScreen(screen, top = screen.scrollTop, bottom = screen.scrollBottom, amount = 1) {
+  const safeTop = Math.max(0, Math.min(screen.rows - 1, top));
+  const safeBottom = Math.max(safeTop, Math.min(screen.rows - 1, bottom));
+  for (let count = 0; count < amount; count += 1) {
+    screen.lines.splice(safeTop, 1);
+    screen.lines.splice(safeBottom, 0, blankLine(screen));
+  }
+}
+
+function reverseScrollScreen(screen, top = screen.scrollTop, bottom = screen.scrollBottom, amount = 1) {
+  const safeTop = Math.max(0, Math.min(screen.rows - 1, top));
+  const safeBottom = Math.max(safeTop, Math.min(screen.rows - 1, bottom));
+  for (let count = 0; count < amount; count += 1) {
+    screen.lines.splice(safeBottom, 1);
+    screen.lines.splice(safeTop, 0, blankLine(screen));
+  }
 }
 
 function clearLine(screen, mode = 0) {
@@ -855,34 +952,115 @@ function moveCursor(screen, row, col) {
   screen.cursorCol = Math.max(0, Math.min(screen.cols - 1, col));
 }
 
+function setAlternateScreen(screen, enabled) {
+  if (enabled && !screen.alternateScreen) {
+    screen.primary = {
+      lines: cloneLines(screen.lines),
+      cursorRow: screen.cursorRow,
+      cursorCol: screen.cursorCol,
+      savedCursorRow: screen.savedCursorRow,
+      savedCursorCol: screen.savedCursorCol,
+      scrollTop: screen.scrollTop,
+      scrollBottom: screen.scrollBottom
+    };
+    screen.lines = Array.from({ length: screen.rows }, () => blankLine(screen));
+    screen.cursorRow = 0;
+    screen.cursorCol = 0;
+    screen.scrollTop = 0;
+    screen.scrollBottom = screen.rows - 1;
+  } else if (!enabled && screen.alternateScreen) {
+    const primary = screen.primary;
+    if (primary) {
+      screen.lines = cloneLines(primary.lines);
+      screen.cursorRow = Math.min(primary.cursorRow, screen.rows - 1);
+      screen.cursorCol = Math.min(primary.cursorCol, screen.cols - 1);
+      screen.savedCursorRow = Math.min(primary.savedCursorRow, screen.rows - 1);
+      screen.savedCursorCol = Math.min(primary.savedCursorCol, screen.cols - 1);
+      screen.scrollTop = 0;
+      screen.scrollBottom = screen.rows - 1;
+    } else {
+      clearScreen(screen, 2);
+    }
+    screen.primary = null;
+  }
+  screen.alternateScreen = enabled;
+}
+
+function insertChars(screen, count) {
+  const line = screen.lines[screen.cursorRow];
+  const amount = Math.max(1, Math.min(count || 1, screen.cols - screen.cursorCol));
+  line.splice(screen.cursorCol, 0, ...Array(amount).fill(" "));
+  line.length = screen.cols;
+}
+
+function deleteChars(screen, count) {
+  const line = screen.lines[screen.cursorRow];
+  const amount = Math.max(1, Math.min(count || 1, screen.cols - screen.cursorCol));
+  line.splice(screen.cursorCol, amount);
+  while (line.length < screen.cols) line.push(" ");
+}
+
+function eraseChars(screen, count) {
+  const amount = Math.max(1, Math.min(count || 1, screen.cols - screen.cursorCol));
+  for (let offset = 0; offset < amount; offset += 1) {
+    screen.lines[screen.cursorRow][screen.cursorCol + offset] = " ";
+  }
+}
+
+function insertLines(screen, count) {
+  const amount = Math.max(1, Math.min(count || 1, screen.scrollBottom - screen.cursorRow + 1));
+  if (screen.cursorRow < screen.scrollTop || screen.cursorRow > screen.scrollBottom) return;
+  for (let index = 0; index < amount; index += 1) {
+    screen.lines.splice(screen.cursorRow, 0, blankLine(screen));
+    screen.lines.splice(screen.scrollBottom + 1, 1);
+  }
+}
+
+function deleteLines(screen, count) {
+  const amount = Math.max(1, Math.min(count || 1, screen.scrollBottom - screen.cursorRow + 1));
+  if (screen.cursorRow < screen.scrollTop || screen.cursorRow > screen.scrollBottom) return;
+  for (let index = 0; index < amount; index += 1) {
+    screen.lines.splice(screen.cursorRow, 1);
+    screen.lines.splice(screen.scrollBottom, 0, blankLine(screen));
+  }
+}
+
 function putChar(screen, char) {
   if (screen.cursorCol >= screen.cols) {
     screen.cursorCol = 0;
     screen.cursorRow += 1;
   }
-  if (screen.cursorRow >= screen.rows) scrollScreen(screen);
+  if (screen.cursorRow > screen.scrollBottom) {
+    scrollScreen(screen);
+    screen.cursorRow = screen.scrollBottom;
+  }
   screen.lines[screen.cursorRow][screen.cursorCol] = char;
   screen.cursorCol += 1;
 }
 
 function handleCsi(screen, paramsText, command) {
-  if (paramsText.includes("?1049") && command === "h") {
-    screen.alternateScreen = true;
-    clearScreen(screen, 2);
-    return;
-  }
-  if (paramsText.includes("?1049") && command === "l") {
-    screen.alternateScreen = false;
-    clearScreen(screen, 2);
-    return;
+  if (paramsText.startsWith("?")) {
+    const privateParams = paramsText.slice(1).split(";").map((item) => Number.parseInt(item, 10));
+    if (command === "h" || command === "l") {
+      const enabled = command === "h";
+      for (const item of privateParams) {
+        if (item === 47 || item === 1047 || item === 1049) setAlternateScreen(screen, enabled);
+        if (item === 1048) enabled ? saveCursor(screen) : restoreCursor(screen);
+        if (item === 25) screen.modes.cursorVisible = enabled;
+      }
+      return;
+    }
   }
   const clean = paramsText.replace(/[?=]/g, "");
   const params = clean.split(";").filter(Boolean).map((item) => Number.parseInt(item, 10));
   const first = Number.isFinite(params[0]) ? params[0] : 0;
+  if (command === "@") insertChars(screen, first || 1);
   if (command === "A") moveCursor(screen, screen.cursorRow - (first || 1), screen.cursorCol);
   if (command === "B") moveCursor(screen, screen.cursorRow + (first || 1), screen.cursorCol);
   if (command === "C") moveCursor(screen, screen.cursorRow, screen.cursorCol + (first || 1));
   if (command === "D") moveCursor(screen, screen.cursorRow, screen.cursorCol - (first || 1));
+  if (command === "E") moveCursor(screen, screen.cursorRow + (first || 1), 0);
+  if (command === "F") moveCursor(screen, screen.cursorRow - (first || 1), 0);
   if (command === "G") moveCursor(screen, screen.cursorRow, (first || 1) - 1);
   if (command === "H" || command === "f") {
     const row = Number.isFinite(params[0]) && params[0] > 0 ? params[0] - 1 : 0;
@@ -891,6 +1069,27 @@ function handleCsi(screen, paramsText, command) {
   }
   if (command === "J") clearScreen(screen, first);
   if (command === "K") clearLine(screen, first);
+  if (command === "L") insertLines(screen, first || 1);
+  if (command === "M") deleteLines(screen, first || 1);
+  if (command === "P") deleteChars(screen, first || 1);
+  if (command === "S") scrollScreen(screen, screen.scrollTop, screen.scrollBottom, first || 1);
+  if (command === "T") reverseScrollScreen(screen, screen.scrollTop, screen.scrollBottom, first || 1);
+  if (command === "X") eraseChars(screen, first || 1);
+  if (command === "d") moveCursor(screen, (first || 1) - 1, screen.cursorCol);
+  if (command === "r") {
+    const top = Number.isFinite(params[0]) && params[0] > 0 ? params[0] - 1 : 0;
+    const bottom = Number.isFinite(params[1]) && params[1] > 0 ? params[1] - 1 : screen.rows - 1;
+    screen.scrollTop = Math.max(0, Math.min(screen.rows - 1, top));
+    screen.scrollBottom = Math.max(screen.scrollTop, Math.min(screen.rows - 1, bottom));
+    moveCursor(screen, 0, 0);
+  }
+  if (command === "s") saveCursor(screen);
+  if (command === "u") restoreCursor(screen);
+}
+
+function handleOsc(screen, content) {
+  const match = /^(?:0|1|2);([\s\S]*)$/.exec(String(content || ""));
+  if (match) screen.title = stripAnsi(match[1]).slice(0, 200);
 }
 
 function feedScreen(screen, text) {
@@ -902,7 +1101,7 @@ function feedScreen(screen, text) {
       const next = value[index + 1];
       if (next === "[") {
         let end = index + 2;
-        while (end < value.length && !/[A-Za-z~]/.test(value[end])) end += 1;
+        while (end < value.length && !/[@-~]/.test(value[end])) end += 1;
         if (end < value.length) {
           handleCsi(screen, value.slice(index + 2, end), value[end]);
           index = end + 1;
@@ -914,9 +1113,32 @@ function feedScreen(screen, text) {
         const st = value.indexOf("\x1b\\", index + 2);
         const end = bell === -1 ? st : st === -1 ? bell : Math.min(bell, st);
         if (end !== -1) {
+          handleOsc(screen, value.slice(index + 2, end));
           index = end + (value[end] === "\x1b" ? 2 : 1);
           continue;
         }
+      }
+      if (next === "7") {
+        saveCursor(screen);
+        index += 2;
+        continue;
+      }
+      if (next === "8") {
+        restoreCursor(screen);
+        index += 2;
+        continue;
+      }
+      if (next === "c") {
+        const reset = createScreen(screen.rows, screen.cols);
+        Object.assign(screen, reset);
+        index += 2;
+        continue;
+      }
+      if (next === "M") {
+        if (screen.cursorRow === screen.scrollTop) reverseScrollScreen(screen);
+        else moveCursor(screen, screen.cursorRow - 1, screen.cursorCol);
+        index += 2;
+        continue;
       }
       index += 2;
       continue;
@@ -925,9 +1147,14 @@ function feedScreen(screen, text) {
       screen.cursorCol = 0;
     } else if (char === "\n") {
       screen.cursorRow += 1;
-      if (screen.cursorRow >= screen.rows) scrollScreen(screen);
+      if (screen.cursorRow > screen.scrollBottom) {
+        scrollScreen(screen);
+        screen.cursorRow = screen.scrollBottom;
+      }
     } else if (char === "\b" || char === "\x7f") {
       screen.cursorCol = Math.max(0, screen.cursorCol - 1);
+    } else if (char === "\t") {
+      moveCursor(screen, screen.cursorRow, Math.min(screen.cols - 1, screen.cursorCol + (8 - (screen.cursorCol % 8))));
     } else if (char >= " ") {
       putChar(screen, char);
     }
@@ -948,6 +1175,11 @@ function screenSnapshot(session, trimRight = true) {
       col: session.screen.cursorCol + 1
     },
     alternateScreen: Boolean(session.screen.alternateScreen),
+    scrollRegion: {
+      top: session.screen.scrollTop + 1,
+      bottom: session.screen.scrollBottom + 1
+    },
+    title: session.screen.title,
     text: lines.join("\n"),
     lines
   };

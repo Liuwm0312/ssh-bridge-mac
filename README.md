@@ -129,6 +129,8 @@ ssh user@host
 
 返回结果包含 `mode`、`detectedProgram`、`confidence`、`hints`、`recommendedKeys` 和当前 `screen` 快照。
 
+`screen` 是对当前终端画面的最佳近似解析。它会处理常见 ANSI/xterm 控制序列，包括光标移动、清屏/清行、保存/恢复光标、滚动区域、插入/删除字符、插入/删除行、alternate screen，以及 OSC 窗口标题。它仍然不是完整图形终端模拟器，但对 `less`、`top`、`vim`、菜单程序和普通 shell 已经更接近真实 Terminal 画面。
+
 ### 终端式工作流工具
 
 - `ssh_mac_type_and_wait`：发送任意输入，然后等待指定文本或短暂等待，返回当前屏幕和状态。
@@ -174,7 +176,7 @@ ssh user@host
 }
 ```
 
-镜像窗口会 `tail -f` 查看 `state/mirrors/` 下的会话 transcript。Codex 仍然通过 MCP 工具控制真正的 PTY 输入；Terminal.app 窗口只是给你旁观，不建议在里面输入。用 `ssh_mac_hide_terminal` 可以停止继续写入镜像 transcript。Terminal 的 tail 窗口可能仍会保留，手动关闭即可。
+镜像窗口会 `tail -f` 查看 `state/mirrors/` 下的会话 transcript。Codex 仍然通过 MCP 工具控制真正的 PTY 输入；Terminal.app 窗口只是给你旁观，不建议在里面输入。用 `ssh_mac_hide_terminal` 可以停止继续写入镜像 transcript。传入 `"closeTail": true` 会尝试停止 tail 进程；传入 `"closeWindow": true` 会尝试关闭插件记录到的 Terminal.app tab/window。
 
 镜像 transcript 会显示 Codex 发送的命令，例如 `$ ls -la ~`。通过 `ssh_mac_key` 发送的特殊按键会显示成 `[ssh-bridge-mac key] ctrl-c` 这类可读标记。
 
@@ -317,6 +319,8 @@ Or use `ssh_mac_key` with names such as:
 
 The result includes `mode`, `detectedProgram`, `confidence`, `hints`, `recommendedKeys`, and the current `screen` snapshot.
 
+`screen` is a best-effort parse of the current terminal display. It handles common ANSI/xterm controls including cursor movement, erase screen/line, save/restore cursor, scroll regions, insert/delete characters, insert/delete lines, alternate screen, and OSC window titles. It is still not a complete graphical terminal emulator, but it is much closer to Terminal.app behavior for `less`, `top`, `vim`, menu programs, and normal shells.
+
 ### Terminal Workflow Tools
 
 - `ssh_mac_type_and_wait`: send arbitrary input, then wait for text or briefly pause, returning the current screen and state.
@@ -362,7 +366,7 @@ Repeated `ssh_mac_show_terminal` calls for the same session reuse the existing m
 }
 ```
 
-The mirror tails a session transcript under `state/mirrors/`. Codex still controls the real PTY input through MCP tools; the Terminal.app window is for watching, not typing. Use `ssh_mac_hide_terminal` to stop writing new output to the mirror transcript. The Terminal tail window may remain open until you close it.
+The mirror tails a session transcript under `state/mirrors/`. Codex still controls the real PTY input through MCP tools; the Terminal.app window is for watching, not typing. Use `ssh_mac_hide_terminal` to stop writing new output to the mirror transcript. Pass `"closeTail": true` to try to stop the tail process, and `"closeWindow": true` to try to close the tracked Terminal.app tab/window.
 
 The mirror transcript shows commands sent by Codex, such as `$ ls -la ~`. Special keys sent through `ssh_mac_key` are shown as readable markers like `[ssh-bridge-mac key] ctrl-c`.
 

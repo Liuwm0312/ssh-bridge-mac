@@ -22,7 +22,7 @@ Use this skill for the Mac-only interactive PTY version of SSH Bridge.
 - Use `ssh_mac_terminal_state` before acting inside full-screen or ambiguous terminal states.
 - Use `ssh_mac_show_terminal` only when the user asks to watch the session locally.
 - Do not call `ssh_mac_show_terminal` repeatedly for the same session unless the user closed the previous mirror and asks to reopen it; use `reopen: true` in that case.
-- Use `ssh_mac_hide_terminal` when the user asks to stop showing local terminal output.
+- Use `ssh_mac_hide_terminal` when the user asks to stop showing local terminal output; pass `closeTail: true` and `closeWindow: true` when they want the watcher closed too.
 - Use `ssh_mac_resize` when full-screen output wraps badly.
 - Use `ssh_mac_host_profile` for one-host inventory and hardware detection.
 - Use `ssh_mac_fleet_summary` when the user asks about multiple configured hosts.
@@ -35,6 +35,7 @@ Use this skill for the Mac-only interactive PTY version of SSH Bridge.
 
 - Always read the terminal output after opening a session.
 - Prefer `ssh_mac_screen` after opening or changing full-screen programs.
+- Treat `ssh_mac_screen` as the current rendered display, not a raw output stream; it includes best-effort xterm parsing for alternate screen, scroll regions, cursor save/restore, and line/character insert/delete.
 - Prefer `ssh_mac_terminal_state` when the screen may be a pager, editor, monitor, REPL, or interactive prompt.
 - Do not enable local Terminal.app mirroring unless the user asks; the default is headless PTY operation.
 - For shell commands, prefer `ssh_mac_run_visible` over raw `ssh_mac_send` so command text is captured cleanly in mirrors.
